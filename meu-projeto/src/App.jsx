@@ -31,6 +31,149 @@ const RESOURCE_MAP = {
 
 const CHART_COLORS = ['#f5c518', '#0f1729', '#10b981', '#f43f5e', '#38bdf8', '#8b5cf6'];
 
+function randomFrom(list) {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function buildAssistantNotifications({ obras, rdos, midias, aprovacoes }) {
+  const obra = randomFrom(obras);
+  const rdo = randomFrom(rdos);
+  const media = randomFrom(midias);
+  const approval = randomFrom(aprovacoes);
+  const obraName = obra?.nome || 'obra sem identificacao';
+  const rdoName = rdo?.id || 'RDO sem identificacao';
+  const mediaName = media?.title || 'arquivo de midia';
+  const mediaOwner = media?.owner || 'Equipe de campo';
+  const approvalOwner = approval?.owner || 'Fiscalizacao';
+  const approvalName = approval?.title || 'aprovacao em andamento';
+
+  return [
+    { id: `obra-avaliacao-${obra?.id ?? 'x'}`, title: 'Avaliacao pendente', body: `A obra ${obraName} esta faltando avaliacao operacional no painel.`, ctaLabel: 'Abrir obra', action: { kind: 'obra', obraId: obra?.id } },
+    { id: `obra-midia-${obra?.id ?? 'x'}`, title: 'Midia pendente', body: `A obra ${obraName} ainda nao recebeu arquivo de midia no acompanhamento recente.`, ctaLabel: 'Ver obra', action: { kind: 'obra', obraId: obra?.id } },
+    { id: `obra-supervisao-${obra?.id ?? 'x'}`, title: 'Supervisao faltando', body: `A obra ${obraName} esta aguardando supervisao registrada no sistema.`, ctaLabel: 'Abrir obra', action: { kind: 'obra', obraId: obra?.id } },
+    { id: `obra-fiscalizacao-${obra?.id ?? 'x'}`, title: 'Fiscalizacao pendente', body: `A obra ${obraName} ainda nao teve fiscalizacao confirmada nesta rodada.`, ctaLabel: 'Ir para obra', action: { kind: 'obra', obraId: obra?.id } },
+    { id: `obra-midia-prazo-${obra?.id ?? 'x'}`, title: 'Midia fora do prazo', body: `A obra ${obraName} recebeu um envio de midia fora do prazo esperado.`, ctaLabel: 'Ver midias', action: { kind: 'screen', screen: 'Midias' } },
+    { id: `obra-fiscal-prazo-${obra?.id ?? 'x'}`, title: 'Fiscalizacao fora do prazo', body: `A obra ${obraName} teve fiscalizacao registrada apos o prazo previsto.`, ctaLabel: 'Ver aprovacoes', action: { kind: 'screen', screen: 'Aprovacoes' } },
+    { id: `rdo-pendente-${rdo?.id ?? 'x'}`, title: 'RDO aguardando', body: `O ${rdoName} da obra ${rdo?.obra || obraName} precisa de revisao antes do fechamento.`, ctaLabel: 'Abrir RDO', action: { kind: 'screen', screen: 'RDO' } },
+    { id: `rdo-turno-${rdo?.id ?? 'x'}`, title: 'Turno sem fechamento', body: `O ${rdoName} ainda nao teve o turno ${rdo?.turno || 'principal'} finalizado.`, ctaLabel: 'Ver RDOs', action: { kind: 'screen', screen: 'RDO' } },
+    { id: `rdo-obra-${obra?.id ?? 'x'}`, title: 'Novo RDO sugerido', body: `A obra ${obraName} pode receber um novo RDO para atualizar o diario de campo.`, ctaLabel: 'Criar RDO', action: { kind: 'obra-rdo', obraId: obra?.id } },
+    { id: `apr-pendente-${approval?.id ?? 'x'}`, title: 'Aprovacao pendente', body: `${approvalName} ainda depende de validacao de ${approvalOwner}.`, ctaLabel: 'Abrir aprovacoes', action: { kind: 'screen', screen: 'Aprovacoes' } },
+    { id: `apr-obra-${approval?.id ?? 'x'}`, title: 'Fluxo de aprovacao', body: `A obra ${approval?.obra || obraName} recebeu uma aprovacao que merece acompanhamento.`, ctaLabel: 'Ver obra', action: { kind: 'obra', obraId: approval?.obraId ?? obra?.id } },
+    { id: `media-enviada-${media?.id ?? 'x'}`, title: 'Nova midia enviada', body: `${mediaOwner} enviou o arquivo ${mediaName} para a obra ${media?.obra || obraName}.`, ctaLabel: 'Abrir arquivo', action: { kind: 'media', screen: 'Midias', url: media?.url } },
+    { id: `media-mapa-${media?.id ?? 'x'}`, title: 'Midia georreferenciada', body: `O arquivo ${mediaName} esta pronto para consulta no mapa da obra ${media?.obra || obraName}.`, ctaLabel: 'Ver no mapa', action: { kind: 'screen', screen: 'Mapa' } },
+    { id: `media-rdo-${media?.id ?? 'x'}`, title: 'Midia vinculada ao RDO', body: `Uma nova evidencia foi associada ao RDO ${media?.rdoId || rdoName}.`, ctaLabel: 'Abrir midias', action: { kind: 'screen', screen: 'Midias' } },
+    { id: `media-ausente-${obra?.id ?? 'x'}`, title: 'Sem evidencia recente', body: `A obra ${obraName} esta sem evidencia visual recente no cadastro.`, ctaLabel: 'Enviar midia', action: { kind: 'screen', screen: 'Midias' } },
+    { id: `obra-historico-${obra?.id ?? 'x'}`, title: 'Historico atualizado', body: `Ja existem novas movimentacoes registradas para a obra ${obraName}.`, ctaLabel: 'Ver historico', action: { kind: 'obra-history', obraId: obra?.id } },
+    { id: `obra-equipe-${obra?.id ?? 'x'}`, title: 'Equipe sem movimentacao', body: `A obra ${obraName} esta com baixa movimentacao de equipe nos ultimos registros.`, ctaLabel: 'Abrir obra', action: { kind: 'obra', obraId: obra?.id } },
+    { id: `apr-fiscal-${approval?.id ?? 'x'}`, title: 'Fiscalizacao solicitada', body: `${approvalOwner} pediu acompanhamento adicional para ${approvalName}.`, ctaLabel: 'Abrir aprovacoes', action: { kind: 'screen', screen: 'Aprovacoes' } },
+    { id: `rdo-descricao-${rdo?.id ?? 'x'}`, title: 'Descricao do RDO', body: `O ${rdoName} possui informacoes que merecem revisao antes do proximo envio.`, ctaLabel: 'Ir para RDO', action: { kind: 'screen', screen: 'RDO' } },
+    { id: `arquivo-recente-${media?.id ?? 'x'}`, title: 'Arquivo pronto para consulta', body: `O arquivo ${mediaName} pode ser aberto agora para conferencia rapida.`, ctaLabel: 'Abrir arquivo', action: { kind: 'media', screen: 'Midias', url: media?.url } },
+  ].filter((notification) => {
+    if (notification.action.kind === 'obra' || notification.action.kind === 'obra-rdo' || notification.action.kind === 'obra-history') {
+      return Boolean(notification.action.obraId);
+    }
+    if (notification.action.kind === 'media') {
+      return Boolean(notification.action.url);
+    }
+    return true;
+  });
+}
+
+function FloatingAssistant({ activeItem, obras, rdos, midias, aprovacoes, onNavigate }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [notification, setNotification] = useState(null);
+
+  const contextualHints = {
+    Obras: 'Posso ajudar a abrir RDOs, revisar historico e organizar frentes.',
+    RDO: 'Vamos registrar o dia com mais clareza e menos atrito.',
+    Aprovacoes: 'Consigo te guiar pelas pendencias e destravar validacoes.',
+    Midias: 'Posso lembrar a obra, o RDO e o tipo certo antes do upload.',
+    Mapa: 'Aqui eu te ajudo a localizar rapidamente midias e aprovacoes.',
+    Graficos: 'Posso resumir os numeros e apontar onde a obra mais concentra registros.',
+    'Log de erros': 'Vamos ler o que falhou e descobrir o proximo passo.',
+  };
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (isOpen || notification) return;
+
+      const pool = buildAssistantNotifications({ obras, rdos, midias, aprovacoes });
+      const nextNotification = randomFrom(pool);
+
+      if (nextNotification) {
+        setNotification({
+          ...nextNotification,
+          id: `${nextNotification.id}-${Date.now()}`,
+        });
+      }
+    }, 60000);
+
+    return () => window.clearInterval(timer);
+  }, [aprovacoes, isOpen, midias, notification, obras, rdos]);
+
+  const handleAction = (action) => {
+    if (!action) return;
+    onNavigate?.(action);
+    setNotification(null);
+  };
+
+  return (
+    <div className="suape-assistant">
+      {notification && !isOpen && (
+        <div className="suape-assistant__notification">
+          <button type="button" className="suape-assistant__dismiss" onClick={() => setNotification(null)} aria-label="Fechar notificacao">
+            <i className="fa-solid fa-xmark" />
+          </button>
+          <p className="suape-assistant__eyebrow">Aviso inteligente</p>
+          <h3 className="suape-assistant__notificationTitle">{notification.title}</h3>
+          <p className="suape-assistant__message">{notification.body}</p>
+          <button type="button" className="suape-assistant__chip suape-assistant__chip--primary" onClick={() => handleAction(notification.action)}>
+            {notification.ctaLabel}
+          </button>
+        </div>
+      )}
+
+      {isOpen && (
+        <div className="suape-assistant__panel">
+          <div className="suape-assistant__panelHeader">
+            <div className="suape-assistant__avatar suape-assistant__avatar--large">
+              <i className="fa-solid fa-sun" />
+            </div>
+            <div>
+              <p className="suape-assistant__eyebrow">Assistente Suape</p>
+              <h3 className="suape-assistant__title">Suly IA</h3>
+            </div>
+          </div>
+
+          <p className="suape-assistant__message">
+            {contextualHints[activeItem] || 'Estou por aqui para te ajudar a seguir com a obra.'}
+          </p>
+
+          <div className="suape-assistant__chips">
+            <button type="button" className="suape-assistant__chip" onClick={() => onNavigate?.({ kind: 'screen', screen: 'RDO' })}>Abrir RDO</button>
+            <button type="button" className="suape-assistant__chip" onClick={() => onNavigate?.({ kind: 'screen', screen: 'Midias' })}>Enviar midia</button>
+            <button type="button" className="suape-assistant__chip" onClick={() => onNavigate?.({ kind: 'screen', screen: 'Mapa' })}>Ver mapa</button>
+          </div>
+        </div>
+      )}
+
+      <button type="button" className="suape-assistant__launcher" onClick={() => setIsOpen((current) => !current)}>
+        <div className="suape-assistant__avatar">
+          <i className="fa-solid fa-sun" />
+        </div>
+        <div className="suape-assistant__copy">
+          <span className="suape-assistant__name">Suly IA</span>
+          <span className="suape-assistant__subtitle">Vamos conversar?</span>
+        </div>
+        <div className="suape-assistant__bubble">
+          <i className={`fa-solid ${isOpen ? 'fa-xmark' : 'fa-comment-dots'}`} />
+        </div>
+      </button>
+    </div>
+  );
+}
+
 function PageShell({ title, subtitle, action, children }) {
   return (
     <>
@@ -181,6 +324,8 @@ function normalizeMedia(item, index) {
     url,
     previewUrl,
     kind: getMediaKind(url, pick(item.tipo, item.type)),
+    owner: toText(pick(item.usuario_nome, item.usuario, item.responsavel, item.autor, 'Equipe de campo')),
+    rdoId: toText(pick(item.rdo_id, item.rdoId, item.rdo, '')),
   };
 }
 
@@ -2083,6 +2228,48 @@ export default function App() {
     };
   });
 
+  const navigateFromAssistant = useCallback((action) => {
+    if (!action) return;
+
+    if (action.kind === 'screen' && action.screen) {
+      setActiveItem(action.screen);
+      return;
+    }
+
+    if (action.kind === 'media') {
+      if (action.screen) {
+        setActiveItem(action.screen);
+      }
+      if (action.url) {
+        window.open(action.url, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+
+    if (action.kind === 'obra') {
+      setActiveItem('Obras');
+      if (action.obraId) {
+        setExpandedObra(action.obraId);
+      }
+      return;
+    }
+
+    const selectedObra = obras.find((item) => String(item.id) === String(action.obraId));
+
+    if (action.kind === 'obra-rdo' && selectedObra) {
+      setActiveItem('Obras');
+      setExpandedObra(selectedObra.id);
+      openWorkModal('rdo', selectedObra);
+      return;
+    }
+
+    if (action.kind === 'obra-history' && selectedObra) {
+      setActiveItem('Obras');
+      setExpandedObra(selectedObra.id);
+      openWorkModal('history', selectedObra);
+    }
+  }, [obras, openWorkModal]);
+
   const toggleObra = (id) => {
     setExpandedObra((current) => (current === id ? null : id));
   };
@@ -2105,6 +2292,15 @@ export default function App() {
           },
         )}
       </main>
+
+      <FloatingAssistant
+        activeItem={activeItem}
+        obras={obras}
+        rdos={rdos}
+        midias={midias}
+        aprovacoes={aprovacoes}
+        onNavigate={navigateFromAssistant}
+      />
 
       {workModal?.obra &&
         createPortal(
