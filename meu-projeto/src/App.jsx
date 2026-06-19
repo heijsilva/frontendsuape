@@ -14,6 +14,7 @@ import 'leaflet/dist/leaflet.css';
 // ─────────────────────────────────────────────
 const API_BASE_URL   = import.meta.env.VITE_API_BASE_URL  || 'https://ki6.com.br/hackathon-suape-api-php/api.php';
 const UPLOAD_BASE_URL = import.meta.env.VITE_UPLOAD_URL   || 'https://ki6.com.br/hackathon-suape-api-php/upload.php';
+const APK_DOWNLOAD_URL = 'https://ki6.com.br/hackathon-suape-api-php/data/suape.apk';
 const ASSET_BASE_URL  = new URL('.', API_BASE_URL).href;
 
 const RESOURCE_MAP = {
@@ -407,7 +408,22 @@ function ObrasScreen({ obras, loading, error, expandedObra, onToggleObra, onOpen
     <PageShell
       title="Gestao de Obras"
       subtitle="Status operacional / RDO"
-      action={<Btn variant="dark"><i className="fa-solid fa-rotate-right text-xs" />Atualizar obras</Btn>}
+      action={
+        <div className="flex flex-wrap gap-2">
+          <Btn variant="dark">
+            <i className="fa-solid fa-rotate-right text-xs" />
+            Atualizar obras
+          </Btn>
+          <a
+            href={APK_DOWNLOAD_URL}
+            download
+            className="inline-flex items-center gap-2 rounded-xl bg-[#f5c518] px-5 py-2.5 text-[11px] font-black uppercase tracking-[0.22em] text-[#0f1729] transition-all duration-150 hover:bg-[#d4a017] active:scale-95"
+          >
+            <i className="fa-solid fa-download text-xs" />
+            Baixar app
+          </a>
+        </div>
+      }
     >
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard label="Obras ativas"  value={String(activeCount).padStart(2,'0')}  hint="Carregadas da API"     tone="amber" />
