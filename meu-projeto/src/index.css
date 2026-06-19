@@ -268,3 +268,29 @@ a {
     font-size: 18px;
   }
 }
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+
+  aside,
+  .suape-assistant,
+  button,
+  a[href*="suape.apk"] {
+    display: none !important;
+  }
+
+  main {
+    width: 100% !important;
+  }
+
+  .pdf-report {
+    padding: 0 !important;
+  }
+
+  .pdf-report section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

@@ -7,6 +7,7 @@ const menuItems = [
   { name: 'Midias', icon: 'fa-image' },
   { name: 'Mapa', icon: 'fa-map-location-dot' },
   { name: 'Graficos', icon: 'fa-chart-column' },
+  { name: 'Relatorio PDF', icon: 'fa-file-pdf' },
   { name: 'Log de erros', icon: 'fa-circle-exclamation' },
 ];
 

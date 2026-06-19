@@ -208,6 +208,32 @@ function buildMapPoints(midias, aprovacoes) {
   return { mediaPoints, approvalPoints, allPoints: [...mediaPoints, ...approvalPoints] };
 }
 
+function buildPdfReports(obras, rdos, midias) {
+  return obras.map((obra) => {
+    const obraRdos = rdos.filter((rdo) => String(rdo.obraId) === String(obra.id) || rdo.obra === obra.nome);
+    const obraMidias = midias.filter((midia) => String(midia.obraId) === String(obra.id) || midia.obra === obra.nome);
+
+    return {
+      ...obra,
+      totalRdos: obraRdos.length,
+      totalMidias: obraMidias.length,
+      lastRdo: obraRdos[0] || null,
+      lastMedia: obraMidias[0] || null,
+      rdos: obraRdos,
+      midias: obraMidias,
+    };
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 // ─────────────────────────────────────────────
 // ASSISTENTE SULY IA
 // ─────────────────────────────────────────────
@@ -247,6 +273,311 @@ function buildAssistantNotifications({ obras, rdos, midias, aprovacoes }) {
     if (n.action.kind === 'media') return Boolean(n.action.url);
     return true;
   });
+}
+
+function RelatorioPdfScreen({ obras, rdos, midias, loading, error }) {
+  const reports = buildPdfReports(obras, rdos, midias);
+  const [activeReport, setActiveReport] = useState(null);
+  const [signatureStage, setSignatureStage] = useState('draft');
+  const [mockSigners, setMockSigners] = useState([
+    { id: '1', name: 'Eng. Responsavel', role: 'Assinatura tecnica', status: 'pending' },
+    { id: '2', name: 'Fiscal da Obra', role: 'Conferencia operacional', status: 'pending' },
+    { id: '3', name: 'Gestor Suape', role: 'Aprovacao final', status: 'pending' },
+  ]);
+
+  const resetSignatureFlow = useCallback(() => {
+    setSignatureStage('draft');
+    setMockSigners([
+      { id: '1', name: 'Eng. Responsavel', role: 'Assinatura tecnica', status: 'pending' },
+      { id: '2', name: 'Fiscal da Obra', role: 'Conferencia operacional', status: 'pending' },
+      { id: '3', name: 'Gestor Suape', role: 'Aprovacao final', status: 'pending' },
+    ]);
+  }, []);
+
+  const openSignatureModal = (report) => {
+    setActiveReport(report);
+    resetSignatureFlow();
+  };
+
+  const closeSignatureModal = () => {
+    setActiveReport(null);
+    resetSignatureFlow();
+  };
+
+  const updateSignerStatus = (targetIndex, status) => {
+    setMockSigners((current) => current.map((signer, index) => (index === targetIndex ? { ...signer, status } : signer)));
+  };
+
+  const sendToSignature = () => {
+    setSignatureStage('sent');
+    updateSignerStatus(0, 'sent');
+    updateSignerStatus(1, 'sent');
+    updateSignerStatus(2, 'sent');
+  };
+
+  const mockSignDocument = () => {
+    setSignatureStage('signed');
+    setMockSigners((current) => current.map((signer) => ({ ...signer, status: 'signed' })));
+  };
+
+  const printReport = (report) => {
+    if (!report) return;
+
+    const rdoMarkup = report.rdos.length
+      ? report.rdos.map((rdo) => `<li><strong>${escapeHtml(rdo.id)}</strong> - ${escapeHtml(rdo.data)} - ${escapeHtml(rdo.turno)} - ${escapeHtml(rdo.status)}<br/>${escapeHtml(rdo.descricao)}</li>`).join('')
+      : '<li>Nenhum RDO relacionado.</li>';
+
+    const mediaMarkup = report.midias.length
+      ? report.midias.map((midia) => {
+          const imageUrl = midia.previewUrl || midia.url;
+          const imageBlock = midia.kind === 'image' && imageUrl
+            ? `<div class="media-image-wrap"><img class="media-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(midia.title)}" /></div>`
+            : '';
+          const linkBlock = midia.url
+            ? `<a class="media-link" href="${escapeHtml(midia.url)}" target="_blank" rel="noreferrer">${escapeHtml(midia.url)}</a>`
+            : '<span class="media-link media-link--muted">Sem link disponivel</span>';
+
+          return `
+            <li class="media-item">
+              ${imageBlock}
+              <div class="media-copy">
+                <strong>${escapeHtml(midia.title)}</strong><br/>
+                ${escapeHtml(midia.meta)} - ${escapeHtml(midia.kind)}<br/>
+                ${linkBlock}
+              </div>
+            </li>
+          `;
+        }).join('')
+      : '<li>Nenhuma midia relacionada.</li>';
+
+    const printWindow = window.open('', '_blank', 'width=960,height=720');
+    if (!printWindow) return;
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Relatorio ${report.nome}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 32px; color: #0f1729; }
+            h1 { font-size: 26px; margin-bottom: 4px; }
+            h2 { font-size: 16px; margin-top: 28px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; }
+            p, li { font-size: 14px; line-height: 1.5; }
+            .meta { margin-bottom: 24px; color: #475569; }
+            .card { border: 1px solid #e2e8f0; border-radius: 16px; padding: 16px; margin-bottom: 16px; }
+            ul { margin: 0; padding-left: 18px; }
+            .media-item { margin-bottom: 18px; }
+            .media-image-wrap { margin: 12px 0; }
+            .media-image { width: 100%; max-width: 320px; border-radius: 14px; border: 1px solid #e2e8f0; display: block; object-fit: cover; }
+            .media-copy { color: #334155; }
+            .media-link { display: inline-block; margin-top: 6px; color: #1d4ed8; word-break: break-all; }
+            .media-link--muted { color: #94a3b8; }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(report.nome)}</h1>
+          <p class="meta">Contrato: ${escapeHtml(report.contrato)} | Status: ${escapeHtml(report.status)} | Equipe: ${escapeHtml(report.equipe)}</p>
+          <div class="card">
+            <h2>RDOs</h2>
+            <ul>${rdoMarkup}</ul>
+          </div>
+          <div class="card">
+            <h2>Midias</h2>
+            <ul>${mediaMarkup}</ul>
+          </div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    window.setTimeout(() => {
+      printWindow.focus();
+      printWindow.print();
+    }, 250);
+  };
+
+  const signatureTone = (status) => (
+    status === 'signed'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : status === 'sent'
+        ? 'border-sky-200 bg-sky-50 text-sky-700'
+        : 'border-slate-200 bg-slate-50 text-slate-500'
+  );
+
+  return (
+    <>
+      <PageShell
+        title="Relatorio PDF"
+        subtitle="Lista simples por obra"
+        action={<Badge tone="amber">{reports.length} obras</Badge>}
+      >
+        <div className="pdf-report space-y-4">
+          {error && <ErrorBanner message={error} />}
+          {loading && <LoadingRow label="Carregando obras para o relatorio..." />}
+          {!loading && reports.length === 0 && !error && <EmptyRow label="Nenhuma obra encontrada para gerar PDF." />}
+
+          <div className="grid gap-3">
+            {reports.map((report) => (
+              <div key={report.id} className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-lg font-black uppercase tracking-tight text-[#0f1729]">{report.nome}</p>
+                </div>
+                <Btn variant="dark" onClick={() => openSignatureModal(report)}>
+                  <i className="fa-solid fa-file-pdf text-xs" />
+                  Gerar PDF
+                </Btn>
+              </div>
+            ))}
+          </div>
+        </div>
+      </PageShell>
+
+      {activeReport &&
+        createPortal(
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-5xl overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+              <div className="border-b border-slate-100 bg-gradient-to-r from-[#0f1729] via-[#14213d] to-[#1d4ed8] px-6 py-5 text-white">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/55">Assinatura mockada</p>
+                    <h2 className="mt-2 text-2xl font-black">Fluxo estilo Clicksign</h2>
+                    <p className="mt-1 text-sm text-white/70">{activeReport.nome}</p>
+                  </div>
+                  <button type="button" onClick={closeSignatureModal} className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white transition-colors hover:bg-white/20">
+                    <i className="fa-solid fa-xmark" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-px bg-slate-100 lg:grid-cols-[1.15fr_0.85fr]">
+                <div className="bg-white p-6">
+                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Documento</p>
+                        <h3 className="mt-1 text-xl font-black text-[#0f1729]">Relatorio da obra</h3>
+                      </div>
+                      <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] ${signatureStage === 'signed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : signatureStage === 'sent' ? 'border-sky-200 bg-sky-50 text-sky-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                        {signatureStage === 'signed' ? 'Assinado' : signatureStage === 'sent' ? 'Enviado' : 'Rascunho'}
+                      </span>
+                    </div>
+
+                    <div className="mt-5 rounded-3xl border border-dashed border-slate-200 bg-white p-6">
+                      <p className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Preview</p>
+                      <h4 className="mt-2 text-2xl font-black text-[#0f1729]">{activeReport.nome}</h4>
+                      <p className="mt-2 text-sm text-slate-500">Contrato: {activeReport.contrato}</p>
+                      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-slate-300">RDOs no PDF</p>
+                          <p className="mt-1 text-lg font-black text-[#0f1729]">{activeReport.totalRdos}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-slate-300">Midias no PDF</p>
+                          <p className="mt-1 text-lg font-black text-[#0f1729]">{activeReport.totalMidias}</p>
+                        </div>
+                      </div>
+                      <div className="mt-5 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-4">
+                        <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Observacao mockada</p>
+                        <p className="mt-2 text-sm text-slate-600">
+                          Este fluxo simula envio, acompanhamento e assinatura digital do relatorio, no mesmo estilo de uma jornada de assinatura externa.
+                        </p>
+                      </div>
+
+                      <div className="mt-5">
+                        <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Midias da obra no PDF</p>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          {activeReport.midias.length === 0 && (
+                            <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-5 text-sm text-slate-400">
+                              Nenhuma midia vinculada a esta obra.
+                            </div>
+                          )}
+                          {activeReport.midias.map((midia) => (
+                            <div key={midia.id} className="overflow-hidden rounded-2xl border border-slate-100 bg-slate-50">
+                              {midia.kind === 'image' && (midia.previewUrl || midia.url) ? (
+                                <img
+                                  src={midia.previewUrl || midia.url}
+                                  alt={midia.title}
+                                  className="h-40 w-full object-cover"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <div className="flex h-40 items-center justify-center bg-gradient-to-br from-slate-900 via-slate-700 to-[#f5c518] text-white">
+                                  <i className={`fa-solid ${midia.kind === 'video' ? 'fa-circle-play' : 'fa-file-lines'} text-4xl`} />
+                                </div>
+                              )}
+                              <div className="space-y-2 px-4 py-3">
+                                <p className="text-sm font-black text-[#0f1729]">{midia.title}</p>
+                                <p className="text-xs text-slate-400">{midia.meta}</p>
+                                {midia.url && (
+                                  <a
+                                    href={midia.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex text-xs font-bold text-[#1d4ed8] underline decoration-[#f5c518] underline-offset-4"
+                                  >
+                                    Abrir arquivo no servidor
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white p-6">
+                  <div className="rounded-3xl border border-slate-200 bg-white">
+                    <div className="border-b border-slate-100 px-5 py-4">
+                      <p className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Assinantes mockados</p>
+                      <h3 className="mt-1 text-lg font-black text-[#0f1729]">Etapas de assinatura</h3>
+                    </div>
+
+                    <div className="space-y-3 px-5 py-5">
+                      {mockSigners.map((signer, index) => (
+                        <div key={signer.id} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-black text-[#0f1729]">{signer.name}</p>
+                              <p className="mt-0.5 text-xs text-slate-400">{signer.role}</p>
+                            </div>
+                            <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] ${signatureTone(signer.status)}`}>
+                              {signer.status === 'signed' ? 'Assinado' : signer.status === 'sent' ? 'Enviado' : 'Pendente'}
+                            </span>
+                          </div>
+                          <div className="mt-3 h-2 rounded-full bg-slate-200">
+                            <div className={`h-2 rounded-full transition-all duration-300 ${signer.status === 'signed' ? 'w-full bg-emerald-500' : signer.status === 'sent' ? 'w-2/3 bg-sky-500' : 'w-1/4 bg-amber-400'}`} />
+                          </div>
+                          {index < mockSigners.length - 1 && <div className="mt-3 border-b border-dashed border-slate-200" />}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                    <p className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Acoes</p>
+                    <div className="mt-4 grid gap-2">
+                      <Btn variant="outline" onClick={() => printReport(activeReport)}>
+                        <i className="fa-solid fa-download text-xs" />
+                        Baixar PDF
+                      </Btn>
+                      <Btn variant="gold" onClick={sendToSignature}>
+                        <i className="fa-solid fa-paper-plane text-xs" />
+                        Enviar para assinatura
+                      </Btn>
+                      <Btn variant="dark" onClick={mockSignDocument}>
+                        <i className="fa-solid fa-signature text-xs" />
+                        Assinar mock
+                      </Btn>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
 }
 
 function FloatingAssistant({ activeItem, obras, rdos, midias, aprovacoes, onNavigate }) {
@@ -1416,6 +1747,7 @@ function getScreen(activeItem, state, handlers) {
     case 'Midias':     return <MidiasUploadScreen midias={state.midias} loading={state.loading} error={state.errors.midias} obras={state.obras} rdos={state.rdos} onUpload={handlers.onUpload} onOpenMap={handlers.onOpenMap} />;
     case 'Mapa':       return <MapaScreen midias={state.midias} aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.midias || state.errors.aprovacoes} selectedPoint={state.mapFocus} />;
     case 'Graficos':   return <GraficosScreen obras={state.obras} rdos={state.rdos} midias={state.midias} loading={state.loading} error={state.errors.rdos || state.errors.obras || state.errors.midias} />;
+    case 'Relatorio PDF': return <RelatorioPdfScreen obras={state.obras} rdos={state.rdos} midias={state.midias} loading={state.loading} error={state.errors.rdos || state.errors.obras || state.errors.midias} />;
     case 'Log de erros': return <LogErrosScreen requestLogs={state.requestLogs} />;
     case 'Obras': default:
       return (
