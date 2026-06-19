@@ -15,12 +15,12 @@ export default function Sidebar({ activeItem, onSelectItem }) {
 
   return (
     <aside
-      className={`sticky top-0 z-50 flex h-screen flex-col justify-between border-r border-[#1a2540] bg-[#0f1729] py-6 text-white transition-all duration-300 ${
+      className={`sticky top-0 z-50 flex h-screen flex-col overflow-hidden border-r border-[#1a2540] bg-[#0f1729] py-6 text-white transition-all duration-300 ${
         isOpen ? 'w-[260px] px-4' : 'w-[80px] px-2'
       }`}
     >
-      <div>
-        <div className={`mb-8 flex items-center justify-between ${isOpen ? 'px-2' : 'flex-col gap-4'}`}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className={`mb-8 flex shrink-0 items-center justify-between ${isOpen ? 'px-2' : 'flex-col gap-4'}`}>
           {isOpen ? (
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-[#1a2e5e] text-white shadow-sm">
@@ -46,7 +46,7 @@ export default function Sidebar({ activeItem, onSelectItem }) {
           </button>
         </div>
 
-        <nav className="flex flex-col gap-2">
+        <nav className="flex flex-col gap-2 overflow-y-auto overflow-x-hidden">
           {menuItems.map((item) => {
             const isActive = activeItem === item.name;
 
@@ -100,3 +100,5 @@ export default function Sidebar({ activeItem, onSelectItem }) {
     </aside>
   );
 }
+
+

@@ -3,24 +3,18 @@ import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet';
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
+  Bar, BarChart, CartesianGrid, Cell, Legend,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import Sidebar from './components/Sidebar/Sidebar';
 import 'leaflet/dist/leaflet.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ki6.com.br/hackathon-suape-api-php/api.php';
-const UPLOAD_BASE_URL = import.meta.env.VITE_UPLOAD_URL || 'https://ki6.com.br/hackathon-suape-api-php/upload.php';
-const ASSET_BASE_URL = new URL('.', API_BASE_URL).href;
+// ─────────────────────────────────────────────
+// CONFIGURAÇÕES
+// ─────────────────────────────────────────────
+const API_BASE_URL   = import.meta.env.VITE_API_BASE_URL  || 'https://ki6.com.br/hackathon-suape-api-php/api.php';
+const UPLOAD_BASE_URL = import.meta.env.VITE_UPLOAD_URL   || 'https://ki6.com.br/hackathon-suape-api-php/upload.php';
+const ASSET_BASE_URL  = new URL('.', API_BASE_URL).href;
 
 const RESOURCE_MAP = {
   Obras: 'obras',
@@ -31,51 +25,225 @@ const RESOURCE_MAP = {
 
 const CHART_COLORS = ['#f5c518', '#0f1729', '#10b981', '#f43f5e', '#38bdf8', '#8b5cf6'];
 
+// ─────────────────────────────────────────────
+// UTILITÁRIOS
+// ─────────────────────────────────────────────
 function randomFrom(list) {
   if (!Array.isArray(list) || list.length === 0) return null;
   return list[Math.floor(Math.random() * list.length)];
 }
 
+function pick(...values) {
+  return values.find((v) => v !== undefined && v !== null && v !== '') ?? null;
+}
+
+function toText(value, fallback = '-') {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? toText(value) : d.toLocaleString('pt-BR');
+}
+
+function formatDate(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? toText(value) : d.toLocaleDateString('pt-BR');
+}
+
+function normalizeCollection(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  return payload.data || payload.registros || payload.items || payload.resultado || payload.dados || [];
+}
+
+function statusTone(status) {
+  const v = toText(status, '').toLowerCase();
+  if (['atrasada','atrasado','reprovado','critico','critica','erro'].some((w) => v.includes(w)))
+    return 'border-rose-200 bg-rose-50 text-rose-600';
+  if (['iniciando','pendente','aguardando','rascunho','alerta'].some((w) => v.includes(w)))
+    return 'border-amber-200 bg-amber-50 text-amber-700';
+  return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+}
+
+function toCoordinate(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(String(value).replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+function resolveProductionAssetUrl(value) {
+  if (!value) return '';
+  const url = String(value).trim();
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('//')) return `https:${url}`;
+  return `${ASSET_BASE_URL}${url.replace(/^\/+/, '')}`;
+}
+
+function getMediaKind(url, explicitType) {
+  const type = toText(explicitType, '').toLowerCase();
+  if (type.includes('video')) return 'video';
+  if (type.includes('image') || type.includes('imagem') || type.includes('foto')) return 'image';
+  if (type.includes('pdf') || type.includes('doc') || type.includes('xls')) return 'document';
+  const f = toText(url, '').split('?')[0].toLowerCase();
+  if (/\.(jpg|jpeg|png|webp|gif)$/i.test(f)) return 'image';
+  if (/\.(mp4|mov|webm)$/i.test(f)) return 'video';
+  return 'document';
+}
+
+function resourceLabel(r) { return r.charAt(0).toUpperCase() + r.slice(1); }
+
+function getApiErrorMessage(error) {
+  if (axios.isAxiosError(error)) return error.response?.data?.erro || error.message || 'Falha na API';
+  return error instanceof Error ? error.message : 'Erro desconhecido';
+}
+
+// ─────────────────────────────────────────────
+// NORMALIZADORES
+// ─────────────────────────────────────────────
+function normalizeObra(item, index) {
+  const id     = pick(item.id, index + 1);
+  const status = pick(item.status, item.situacao, item.estado, 'Sem status');
+  const equipe = pick(item.equipe, item.total_equipe, item.colaboradores, item.membros, item.tecnicos, 0);
+  return {
+    id,
+    nome:      toText(pick(item.nome, item.titulo, item.descricao, item.obra, `Obra ${id}`)),
+    contrato:  toText(pick(item.contrato, item.numero_contrato, item.cod_contrato, 'Sem contrato')),
+    status:    toText(status),
+    equipe:    toText(typeof equipe === 'object' ? equipe.tecnicos ?? equipe.total ?? equipe.quantidade : equipe),
+    rdos:      toText(pick(item.rdos, item.qtd_rdos, item.total_rdos, item.registros, 0)),
+    progresso: toText(pick(item.progresso, item.percentual, item.percentual_conclusao, item.avanco, 0)),
+    cor:       statusTone(status),
+  };
+}
+
+function normalizeRdo(item, index) {
+  const id = pick(item.id, index + 1);
+  return {
+    id:        toText(id, `RDO-${index + 1}`),
+    obraId:    pick(item.obra_id, item.obraId, item.obra, item.empreendimento_id),
+    obra:      toText(pick(item.obra_nome, item.obra, item.nome_obra, item.titulo, `Obra ${pick(item.obra_id, '-')}`)),
+    data:      formatDate(pick(item.data_rdo, item.data, item.criado_em, item.created_at, item.updated_at)),
+    turno:     toText(pick(item.turno, item.periodo, item.horario, item.status, 'Sem turno')),
+    status:    toText(pick(item.status, 'Sem status')),
+    descricao: toText(pick(item.atividades, item.descricao, item.comentarios, item.observacao, 'Sem descricao')),
+  };
+}
+
+function normalizeApproval(item, index) {
+  const id = pick(item.id, index + 1);
+  return {
+    id:       toText(id, `APR-${index + 1}`),
+    title:    toText(pick(item.titulo, item.title, item.observacao, item.descricao, `Aprovacao ${pick(item.rdo_id, id)}`)),
+    owner:    toText(pick(item.usuario_nome, item.owner, item.aprovador, item.usuario, item.responsavel, 'Sistema')),
+    priority: toText(pick(item.prioridade, item.priority, 'Media')),
+    date:     formatDateTime(pick(item.aprovado_em, item.data, item.created_at, item.criado_em, item.updated_at)),
+    status:   toText(pick(item.status, 'Pendente')),
+  };
+}
+
+function normalizeMedia(item, index) {
+  const id       = pick(item.id, index + 1);
+  const url      = resolveProductionAssetUrl(pick(item.caminho, item.url, item.arquivo, item.path));
+  const previewUrl = resolveProductionAssetUrl(
+    pick(item.miniatura_caminho, item.miniaturaUrl, item.miniatura_url, item.miniatura_nome_arquivo, item.caminho, item.url, item.arquivo, item.path),
+  );
+  return {
+    id:       toText(id, `MID-${index + 1}`),
+    title:    toText(pick(item.descricao, item.nome, item.titulo, `Midia ${pick(item.tipo, id)}`)),
+    type:     toText(pick(item.tipo, item.type, 'Arquivo')).toUpperCase(),
+    meta:     [pick(item.obra_nome, item.obra, item.obra_id ? `Obra ${item.obra_id}` : null), formatDateTime(pick(item.capturado_em, item.created_at, item.data))].filter(Boolean).join(' • ') || 'Sem metadados',
+    url,
+    previewUrl,
+    kind:     getMediaKind(url, pick(item.tipo, item.type)),
+    owner:    toText(pick(item.usuario_nome, item.usuario, item.responsavel, item.autor, 'Equipe de campo')),
+    rdoId:    toText(pick(item.rdo_id, item.rdoId, item.rdo, '')),
+  };
+}
+
+// ─────────────────────────────────────────────
+// BUILDERS DE CHART / MAP
+// ─────────────────────────────────────────────
+function buildRdoRanking(obras, rdos) {
+  const counts = new Map();
+  rdos.forEach((rdo) => {
+    const key   = rdo.obraId ? String(rdo.obraId) : rdo.obra;
+    const label = rdo.obraId ? obras.find((o) => String(o.id) === String(rdo.obraId))?.nome || rdo.obra : rdo.obra;
+    const cur   = counts.get(key) || { name: label, count: 0 };
+    counts.set(key, { name: cur.name, count: cur.count + 1 });
+  });
+  return Array.from(counts.values()).sort((a, b) => b.count - a.count).slice(0, 8);
+}
+
+function buildMediaDistribution(midias) {
+  const counts = new Map();
+  midias.forEach((m) => {
+    const key = m.obraId ? String(m.obraId) : m.obra;
+    const cur = counts.get(key) || { name: m.obra, count: 0 };
+    counts.set(key, { name: cur.name, count: cur.count + 1 });
+  });
+  return Array.from(counts.values()).sort((a, b) => b.count - a.count).slice(0, 8);
+}
+
+function buildMapPoints(midias, aprovacoes) {
+  const mediaPoints = midias.map((item, i) => {
+    const lat = toCoordinate(item.latitude);
+    const lng = toCoordinate(item.longitude);
+    if (!lat || !lng) return null;
+    return { id: `media-${item.id || i}`, kind: 'media', label: item.title, sublabel: item.obra, latitude: lat, longitude: lng };
+  }).filter(Boolean);
+
+  const approvalPoints = aprovacoes.map((item, i) => {
+    const lat = toCoordinate(item.latitude);
+    const lng = toCoordinate(item.longitude);
+    if (!lat || !lng) return null;
+    return { id: `approval-${item.id || i}`, kind: 'approval', label: item.title, sublabel: item.owner, latitude: lat, longitude: lng };
+  }).filter(Boolean);
+
+  return { mediaPoints, approvalPoints, allPoints: [...mediaPoints, ...approvalPoints] };
+}
+
+// ─────────────────────────────────────────────
+// ASSISTENTE SULY IA
+// ─────────────────────────────────────────────
 function buildAssistantNotifications({ obras, rdos, midias, aprovacoes }) {
-  const obra = randomFrom(obras);
-  const rdo = randomFrom(rdos);
-  const media = randomFrom(midias);
-  const approval = randomFrom(aprovacoes);
-  const obraName = obra?.nome || 'obra sem identificacao';
-  const rdoName = rdo?.id || 'RDO sem identificacao';
-  const mediaName = media?.title || 'arquivo de midia';
-  const mediaOwner = media?.owner || 'Equipe de campo';
+  const obra = randomFrom(obras); const rdo = randomFrom(rdos);
+  const media = randomFrom(midias); const approval = randomFrom(aprovacoes);
+  const obraName    = obra?.nome        || 'obra sem identificacao';
+  const rdoName     = rdo?.id           || 'RDO sem identificacao';
+  const mediaName   = media?.title      || 'arquivo de midia';
+  const mediaOwner  = media?.owner      || 'Equipe de campo';
   const approvalOwner = approval?.owner || 'Fiscalizacao';
-  const approvalName = approval?.title || 'aprovacao em andamento';
+  const approvalName  = approval?.title || 'aprovacao em andamento';
 
   return [
-    { id: `obra-avaliacao-${obra?.id ?? 'x'}`, title: 'Avaliacao pendente', body: `A obra ${obraName} esta faltando avaliacao operacional no painel.`, ctaLabel: 'Abrir obra', action: { kind: 'obra', obraId: obra?.id } },
-    { id: `obra-midia-${obra?.id ?? 'x'}`, title: 'Midia pendente', body: `A obra ${obraName} ainda nao recebeu arquivo de midia no acompanhamento recente.`, ctaLabel: 'Ver obra', action: { kind: 'obra', obraId: obra?.id } },
-    { id: `obra-supervisao-${obra?.id ?? 'x'}`, title: 'Supervisao faltando', body: `A obra ${obraName} esta aguardando supervisao registrada no sistema.`, ctaLabel: 'Abrir obra', action: { kind: 'obra', obraId: obra?.id } },
-    { id: `obra-fiscalizacao-${obra?.id ?? 'x'}`, title: 'Fiscalizacao pendente', body: `A obra ${obraName} ainda nao teve fiscalizacao confirmada nesta rodada.`, ctaLabel: 'Ir para obra', action: { kind: 'obra', obraId: obra?.id } },
-    { id: `obra-midia-prazo-${obra?.id ?? 'x'}`, title: 'Midia fora do prazo', body: `A obra ${obraName} recebeu um envio de midia fora do prazo esperado.`, ctaLabel: 'Ver midias', action: { kind: 'screen', screen: 'Midias' } },
-    { id: `obra-fiscal-prazo-${obra?.id ?? 'x'}`, title: 'Fiscalizacao fora do prazo', body: `A obra ${obraName} teve fiscalizacao registrada apos o prazo previsto.`, ctaLabel: 'Ver aprovacoes', action: { kind: 'screen', screen: 'Aprovacoes' } },
-    { id: `rdo-pendente-${rdo?.id ?? 'x'}`, title: 'RDO aguardando', body: `O ${rdoName} da obra ${rdo?.obra || obraName} precisa de revisao antes do fechamento.`, ctaLabel: 'Abrir RDO', action: { kind: 'screen', screen: 'RDO' } },
-    { id: `rdo-turno-${rdo?.id ?? 'x'}`, title: 'Turno sem fechamento', body: `O ${rdoName} ainda nao teve o turno ${rdo?.turno || 'principal'} finalizado.`, ctaLabel: 'Ver RDOs', action: { kind: 'screen', screen: 'RDO' } },
-    { id: `rdo-obra-${obra?.id ?? 'x'}`, title: 'Novo RDO sugerido', body: `A obra ${obraName} pode receber um novo RDO para atualizar o diario de campo.`, ctaLabel: 'Criar RDO', action: { kind: 'obra-rdo', obraId: obra?.id } },
-    { id: `apr-pendente-${approval?.id ?? 'x'}`, title: 'Aprovacao pendente', body: `${approvalName} ainda depende de validacao de ${approvalOwner}.`, ctaLabel: 'Abrir aprovacoes', action: { kind: 'screen', screen: 'Aprovacoes' } },
-    { id: `apr-obra-${approval?.id ?? 'x'}`, title: 'Fluxo de aprovacao', body: `A obra ${approval?.obra || obraName} recebeu uma aprovacao que merece acompanhamento.`, ctaLabel: 'Ver obra', action: { kind: 'obra', obraId: approval?.obraId ?? obra?.id } },
-    { id: `media-enviada-${media?.id ?? 'x'}`, title: 'Nova midia enviada', body: `${mediaOwner} enviou o arquivo ${mediaName} para a obra ${media?.obra || obraName}.`, ctaLabel: 'Abrir arquivo', action: { kind: 'media', screen: 'Midias', url: media?.url } },
-    { id: `media-mapa-${media?.id ?? 'x'}`, title: 'Midia georreferenciada', body: `O arquivo ${mediaName} esta pronto para consulta no mapa da obra ${media?.obra || obraName}.`, ctaLabel: 'Ver no mapa', action: { kind: 'screen', screen: 'Mapa' } },
-    { id: `media-rdo-${media?.id ?? 'x'}`, title: 'Midia vinculada ao RDO', body: `Uma nova evidencia foi associada ao RDO ${media?.rdoId || rdoName}.`, ctaLabel: 'Abrir midias', action: { kind: 'screen', screen: 'Midias' } },
-    { id: `media-ausente-${obra?.id ?? 'x'}`, title: 'Sem evidencia recente', body: `A obra ${obraName} esta sem evidencia visual recente no cadastro.`, ctaLabel: 'Enviar midia', action: { kind: 'screen', screen: 'Midias' } },
-    { id: `obra-historico-${obra?.id ?? 'x'}`, title: 'Historico atualizado', body: `Ja existem novas movimentacoes registradas para a obra ${obraName}.`, ctaLabel: 'Ver historico', action: { kind: 'obra-history', obraId: obra?.id } },
-    { id: `obra-equipe-${obra?.id ?? 'x'}`, title: 'Equipe sem movimentacao', body: `A obra ${obraName} esta com baixa movimentacao de equipe nos ultimos registros.`, ctaLabel: 'Abrir obra', action: { kind: 'obra', obraId: obra?.id } },
-    { id: `apr-fiscal-${approval?.id ?? 'x'}`, title: 'Fiscalizacao solicitada', body: `${approvalOwner} pediu acompanhamento adicional para ${approvalName}.`, ctaLabel: 'Abrir aprovacoes', action: { kind: 'screen', screen: 'Aprovacoes' } },
-    { id: `rdo-descricao-${rdo?.id ?? 'x'}`, title: 'Descricao do RDO', body: `O ${rdoName} possui informacoes que merecem revisao antes do proximo envio.`, ctaLabel: 'Ir para RDO', action: { kind: 'screen', screen: 'RDO' } },
-    { id: `arquivo-recente-${media?.id ?? 'x'}`, title: 'Arquivo pronto para consulta', body: `O arquivo ${mediaName} pode ser aberto agora para conferencia rapida.`, ctaLabel: 'Abrir arquivo', action: { kind: 'media', screen: 'Midias', url: media?.url } },
-  ].filter((notification) => {
-    if (notification.action.kind === 'obra' || notification.action.kind === 'obra-rdo' || notification.action.kind === 'obra-history') {
-      return Boolean(notification.action.obraId);
-    }
-    if (notification.action.kind === 'media') {
-      return Boolean(notification.action.url);
-    }
+    { id: `obra-avaliacao-${obra?.id ?? 'x'}`,   title: 'Avaliacao pendente',         body: `A obra ${obraName} esta faltando avaliacao operacional no painel.`,               ctaLabel: 'Abrir obra',       action: { kind: 'obra',    obraId: obra?.id } },
+    { id: `obra-midia-${obra?.id ?? 'x'}`,        title: 'Midia pendente',             body: `A obra ${obraName} ainda nao recebeu arquivo de midia no acompanhamento.`,        ctaLabel: 'Ver obra',         action: { kind: 'obra',    obraId: obra?.id } },
+    { id: `obra-supervisao-${obra?.id ?? 'x'}`,   title: 'Supervisao faltando',        body: `A obra ${obraName} esta aguardando supervisao registrada no sistema.`,             ctaLabel: 'Abrir obra',       action: { kind: 'obra',    obraId: obra?.id } },
+    { id: `obra-fiscalizacao-${obra?.id ?? 'x'}`, title: 'Fiscalizacao pendente',      body: `A obra ${obraName} ainda nao teve fiscalizacao confirmada nesta rodada.`,          ctaLabel: 'Ir para obra',     action: { kind: 'obra',    obraId: obra?.id } },
+    { id: `obra-midia-prazo-${obra?.id ?? 'x'}`,  title: 'Midia fora do prazo',        body: `A obra ${obraName} recebeu um envio de midia fora do prazo esperado.`,             ctaLabel: 'Ver midias',       action: { kind: 'screen',  screen: 'Midias' } },
+    { id: `obra-fiscal-prazo-${obra?.id ?? 'x'}`, title: 'Fiscalizacao fora do prazo', body: `A obra ${obraName} teve fiscalizacao registrada apos o prazo previsto.`,           ctaLabel: 'Ver aprovacoes',   action: { kind: 'screen',  screen: 'Aprovacoes' } },
+    { id: `rdo-pendente-${rdo?.id ?? 'x'}`,       title: 'RDO aguardando',             body: `O ${rdoName} da obra ${rdo?.obra || obraName} precisa de revisao.`,               ctaLabel: 'Abrir RDO',        action: { kind: 'screen',  screen: 'RDO' } },
+    { id: `rdo-turno-${rdo?.id ?? 'x'}`,          title: 'Turno sem fechamento',       body: `O ${rdoName} ainda nao teve o turno ${rdo?.turno || 'principal'} finalizado.`,     ctaLabel: 'Ver RDOs',         action: { kind: 'screen',  screen: 'RDO' } },
+    { id: `rdo-obra-${obra?.id ?? 'x'}`,          title: 'Novo RDO sugerido',          body: `A obra ${obraName} pode receber um novo RDO para atualizar o diario de campo.`,   ctaLabel: 'Criar RDO',        action: { kind: 'obra-rdo', obraId: obra?.id } },
+    { id: `apr-pendente-${approval?.id ?? 'x'}`,  title: 'Aprovacao pendente',         body: `${approvalName} ainda depende de validacao de ${approvalOwner}.`,                  ctaLabel: 'Abrir aprovacoes', action: { kind: 'screen',  screen: 'Aprovacoes' } },
+    { id: `apr-obra-${approval?.id ?? 'x'}`,      title: 'Fluxo de aprovacao',         body: `A obra ${approval?.obra || obraName} recebeu uma aprovacao para acompanhar.`,     ctaLabel: 'Ver obra',         action: { kind: 'obra',    obraId: approval?.obraId ?? obra?.id } },
+    { id: `media-enviada-${media?.id ?? 'x'}`,    title: 'Nova midia enviada',         body: `${mediaOwner} enviou o arquivo ${mediaName} para a obra ${media?.obra || obraName}.`, ctaLabel: 'Abrir arquivo', action: { kind: 'media',   screen: 'Midias', url: media?.url } },
+    { id: `media-mapa-${media?.id ?? 'x'}`,       title: 'Midia georreferenciada',     body: `O arquivo ${mediaName} esta pronto para consulta no mapa.`,                         ctaLabel: 'Ver no mapa',      action: { kind: 'screen',  screen: 'Mapa' } },
+    { id: `media-rdo-${media?.id ?? 'x'}`,        title: 'Midia vinculada ao RDO',     body: `Uma nova evidencia foi associada ao RDO ${media?.rdoId || rdoName}.`,               ctaLabel: 'Abrir midias',     action: { kind: 'screen',  screen: 'Midias' } },
+    { id: `media-ausente-${obra?.id ?? 'x'}`,     title: 'Sem evidencia recente',      body: `A obra ${obraName} esta sem evidencia visual recente no cadastro.`,                 ctaLabel: 'Enviar midia',     action: { kind: 'screen',  screen: 'Midias' } },
+    { id: `obra-historico-${obra?.id ?? 'x'}`,    title: 'Historico atualizado',       body: `Ja existem novas movimentacoes registradas para a obra ${obraName}.`,              ctaLabel: 'Ver historico',    action: { kind: 'obra-history', obraId: obra?.id } },
+    { id: `obra-equipe-${obra?.id ?? 'x'}`,       title: 'Equipe sem movimentacao',    body: `A obra ${obraName} esta com baixa movimentacao de equipe nos ultimos registros.`,  ctaLabel: 'Abrir obra',       action: { kind: 'obra',    obraId: obra?.id } },
+    { id: `apr-fiscal-${approval?.id ?? 'x'}`,    title: 'Fiscalizacao solicitada',    body: `${approvalOwner} pediu acompanhamento adicional para ${approvalName}.`,             ctaLabel: 'Abrir aprovacoes', action: { kind: 'screen',  screen: 'Aprovacoes' } },
+    { id: `rdo-descricao-${rdo?.id ?? 'x'}`,      title: 'Descricao do RDO',           body: `O ${rdoName} possui informacoes que merecem revisao antes do proximo envio.`,       ctaLabel: 'Ir para RDO',      action: { kind: 'screen',  screen: 'RDO' } },
+    { id: `arquivo-recente-${media?.id ?? 'x'}`,  title: 'Arquivo pronto para consulta', body: `O arquivo ${mediaName} pode ser aberto agora para conferencia rapida.`,           ctaLabel: 'Abrir arquivo',    action: { kind: 'media',   screen: 'Midias', url: media?.url } },
+  ].filter((n) => {
+    if (['obra','obra-rdo','obra-history'].includes(n.action.kind)) return Boolean(n.action.obraId);
+    if (n.action.kind === 'media') return Boolean(n.action.url);
     return true;
   });
 }
@@ -84,7 +252,7 @@ function FloatingAssistant({ activeItem, obras, rdos, midias, aprovacoes, onNavi
   const [isOpen, setIsOpen] = useState(false);
   const [notification, setNotification] = useState(null);
 
-  const contextualHints = {
+  const hints = {
     Obras: 'Posso ajudar a abrir RDOs, revisar historico e organizar frentes.',
     RDO: 'Vamos registrar o dia com mais clareza e menos atrito.',
     Aprovacoes: 'Consigo te guiar pelas pendencias e destravar validacoes.',
@@ -95,34 +263,22 @@ function FloatingAssistant({ activeItem, obras, rdos, midias, aprovacoes, onNavi
   };
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    const t = window.setInterval(() => {
       if (isOpen || notification) return;
-
       const pool = buildAssistantNotifications({ obras, rdos, midias, aprovacoes });
-      const nextNotification = randomFrom(pool);
-
-      if (nextNotification) {
-        setNotification({
-          ...nextNotification,
-          id: `${nextNotification.id}-${Date.now()}`,
-        });
-      }
+      const next = randomFrom(pool);
+      if (next) setNotification({ ...next, id: `${next.id}-${Date.now()}` });
     }, 60000);
-
-    return () => window.clearInterval(timer);
+    return () => window.clearInterval(t);
   }, [aprovacoes, isOpen, midias, notification, obras, rdos]);
 
-  const handleAction = (action) => {
-    if (!action) return;
-    onNavigate?.(action);
-    setNotification(null);
-  };
+  const handleAction = (action) => { if (!action) return; onNavigate?.(action); setNotification(null); };
 
   return (
     <div className="suape-assistant">
       {notification && !isOpen && (
-        <div className="suape-assistant__notification">
-          <button type="button" className="suape-assistant__dismiss" onClick={() => setNotification(null)} aria-label="Fechar notificacao">
+        <div className="suape-assistant__notification animate-in slide-in-from-bottom-4 fade-in duration-300">
+          <button type="button" className="suape-assistant__dismiss" onClick={() => setNotification(null)}>
             <i className="fa-solid fa-xmark" />
           </button>
           <p className="suape-assistant__eyebrow">Aviso inteligente</p>
@@ -135,21 +291,15 @@ function FloatingAssistant({ activeItem, obras, rdos, midias, aprovacoes, onNavi
       )}
 
       {isOpen && (
-        <div className="suape-assistant__panel">
+        <div className="suape-assistant__panel animate-in slide-in-from-bottom-4 fade-in duration-300">
           <div className="suape-assistant__panelHeader">
-            <div className="suape-assistant__avatar suape-assistant__avatar--large">
-              <i className="fa-solid fa-sun" />
-            </div>
+            <div className="suape-assistant__avatar suape-assistant__avatar--large"><i className="fa-solid fa-sun" /></div>
             <div>
               <p className="suape-assistant__eyebrow">Assistente Suape</p>
               <h3 className="suape-assistant__title">Suly IA</h3>
             </div>
           </div>
-
-          <p className="suape-assistant__message">
-            {contextualHints[activeItem] || 'Estou por aqui para te ajudar a seguir com a obra.'}
-          </p>
-
+          <p className="suape-assistant__message">{hints[activeItem] || 'Estou por aqui para te ajudar a seguir com a obra.'}</p>
           <div className="suape-assistant__chips">
             <button type="button" className="suape-assistant__chip" onClick={() => onNavigate?.({ kind: 'screen', screen: 'RDO' })}>Abrir RDO</button>
             <button type="button" className="suape-assistant__chip" onClick={() => onNavigate?.({ kind: 'screen', screen: 'Midias' })}>Enviar midia</button>
@@ -158,392 +308,168 @@ function FloatingAssistant({ activeItem, obras, rdos, midias, aprovacoes, onNavi
         </div>
       )}
 
-      <button type="button" className="suape-assistant__launcher" onClick={() => setIsOpen((current) => !current)}>
-        <div className="suape-assistant__avatar">
-          <i className="fa-solid fa-sun" />
-        </div>
+      <button
+        type="button"
+        className="suape-assistant__launcher transition-all duration-200 hover:scale-105 active:scale-95"
+        onClick={() => setIsOpen((c) => !c)}
+      >
+        <div className="suape-assistant__avatar"><i className="fa-solid fa-sun" /></div>
         <div className="suape-assistant__copy">
           <span className="suape-assistant__name">Suly IA</span>
           <span className="suape-assistant__subtitle">Vamos conversar?</span>
         </div>
         <div className="suape-assistant__bubble">
-          <i className={`fa-solid ${isOpen ? 'fa-xmark' : 'fa-comment-dots'}`} />
+          <i className={`fa-solid ${isOpen ? 'fa-xmark' : 'fa-comment-dots'} transition-all duration-200`} />
         </div>
       </button>
     </div>
   );
 }
 
+// ─────────────────────────────────────────────
+// COMPONENTES DE LAYOUT BASE
+// ─────────────────────────────────────────────
 function PageShell({ title, subtitle, action, children }) {
   return (
     <>
-      <header className="border-b border-white/70 bg-white/90 px-6 py-5 shadow-[0_8px_30px_rgba(15,23,42,0.05)] backdrop-blur">
+      <header className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/95 px-6 py-5 shadow-sm backdrop-blur-md">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">{subtitle}</p>
-            <h1 className="mt-2 text-3xl font-black uppercase tracking-[0.18em] text-[#0f1729] sm:text-4xl">
-              {title}
-            </h1>
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">{subtitle}</p>
+            <h1 className="mt-1.5 text-3xl font-black uppercase tracking-tight text-[#0f1729] sm:text-4xl">{title}</h1>
           </div>
           {action}
         </div>
       </header>
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</div>
+      <div className="flex-1 overflow-y-auto p-5 sm:p-6 animate-in fade-in duration-300">{children}</div>
     </>
   );
 }
 
 function StatCard({ label, value, hint, tone = 'slate' }) {
-  const toneClasses = {
-    slate: 'from-slate-900 to-slate-700',
-    amber: 'from-[#f5c518] to-[#d8a800]',
-    emerald: 'from-emerald-500 to-emerald-600',
-    red: 'from-rose-500 to-rose-600',
+  const gradients = {
+    slate:   'from-slate-700 to-slate-900',
+    amber:   'from-[#f5c518] to-[#d4a017]',
+    emerald: 'from-emerald-400 to-emerald-600',
+    red:     'from-rose-400 to-rose-600',
   };
-
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className={`h-1.5 w-16 rounded-full bg-gradient-to-r ${toneClasses[tone]}`} />
-      <p className="mt-4 text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">{label}</p>
+    <div className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
+      <div className={`h-1 w-12 rounded-full bg-gradient-to-r ${gradients[tone]} transition-all duration-300 group-hover:w-20`} />
+      <p className="mt-4 text-[9px] font-black uppercase tracking-[0.4em] text-slate-400">{label}</p>
       <div className="mt-2 flex items-end justify-between gap-4">
-        <span className="text-3xl font-black text-[#0f1729]">{value}</span>
-        <span className="text-right text-xs font-medium text-slate-500">{hint}</span>
+        <span className="text-3xl font-black tabular-nums text-[#0f1729]">{value}</span>
+        {hint && <span className="mb-0.5 text-right text-[11px] font-medium leading-tight text-slate-400">{hint}</span>}
       </div>
     </div>
   );
 }
 
-function pick(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null;
-}
-
-function toText(value, fallback = '-') {
-  if (value === undefined || value === null || value === '') return fallback;
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
-}
-
-function formatDateTime(value) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return toText(value);
-  return date.toLocaleString('pt-BR');
-}
-
-function formatDate(value) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return toText(value);
-  return date.toLocaleDateString('pt-BR');
-}
-
-function normalizeCollection(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== 'object') return [];
+function Badge({ children, tone = 'slate' }) {
+  const styles = {
+    slate:   'border-slate-200 bg-slate-50 text-slate-500',
+    amber:   'border-amber-200 bg-amber-50 text-amber-700',
+    emerald: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    red:     'border-rose-200 bg-rose-50 text-rose-600',
+    sky:     'border-sky-200 bg-sky-50 text-sky-700',
+  };
   return (
-    payload.data ||
-    payload.registros ||
-    payload.items ||
-    payload.resultado ||
-    payload.dados ||
-    []
+    <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.22em] ${styles[tone]}`}>
+      {children}
+    </span>
   );
 }
 
-function statusTone(status) {
-  const value = toText(status, '').toLowerCase();
-  if (['atrasada', 'atrasado', 'reprovado', 'critico', 'critica', 'erro'].some((word) => value.includes(word))) {
-    return 'border-rose-100 bg-rose-50 text-rose-600';
-  }
-  if (['iniciando', 'pendente', 'aguardando', 'rascunho', 'alerta'].some((word) => value.includes(word))) {
-    return 'border-amber-100 bg-amber-50 text-amber-700';
-  }
-  return 'border-emerald-100 bg-emerald-50 text-emerald-600';
-}
-
-function normalizeObra(item, index) {
-  const id = pick(item.id, index + 1);
-  const status = pick(item.status, item.situacao, item.estado, 'Sem status');
-  const equipe = pick(item.equipe, item.total_equipe, item.colaboradores, item.membros, item.tecnicos, 0);
-  const rdos = pick(item.rdos, item.qtd_rdos, item.total_rdos, item.registros, 0);
-  const progresso = pick(item.progresso, item.percentual, item.percentual_conclusao, item.avanco, 0);
-
-  return {
-    id,
-    nome: toText(pick(item.nome, item.titulo, item.descricao, item.obra, `Obra ${id}`)),
-    contrato: toText(pick(item.contrato, item.numero_contrato, item.cod_contrato, item.contrato_numero, 'Sem contrato')),
-    status: toText(status),
-    equipe: toText(typeof equipe === 'object' ? equipe.tecnicos ?? equipe.total ?? equipe.quantidade : equipe),
-    rdos: toText(rdos),
-    progresso: toText(progresso),
-    cor: statusTone(status),
+function Btn({ children, variant = 'dark', onClick, disabled, type = 'button', className = '' }) {
+  const base = 'inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-[11px] font-black uppercase tracking-[0.22em] transition-all duration-150 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2';
+  const variants = {
+    dark:    'bg-[#0f1729] text-white hover:bg-[#1a2640] focus-visible:ring-[#0f1729]',
+    gold:    'bg-[#f5c518] text-[#0f1729] hover:bg-[#d4a017] focus-visible:ring-[#f5c518]',
+    outline: 'border border-slate-200 bg-white text-[#0f1729] hover:border-[#f5c518] hover:text-[#9a7a00] focus-visible:ring-slate-300',
+    danger:  'border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 focus-visible:ring-rose-300',
   };
-}
-
-function normalizeRdo(item, index) {
-  const id = pick(item.id, index + 1);
-  return {
-    id: toText(id, `RDO-${index + 1}`),
-    obraId: pick(item.obra_id, item.obraId, item.obra, item.empreendimento_id),
-    obra: toText(pick(item.obra_nome, item.obra, item.nome_obra, item.titulo, item.empreendimento, `Obra ${pick(item.obra_id, '-')}`)),
-    data: formatDate(pick(item.data_rdo, item.data, item.criado_em, item.created_at, item.updated_at)),
-    turno: toText(pick(item.turno, item.periodo, item.horario, item.status, 'Sem turno')),
-    status: toText(pick(item.status, 'Sem status')),
-    descricao: toText(pick(item.atividades, item.descricao, item.comentarios, item.observacao, 'Sem descricao')),
-  };
-}
-
-function normalizeApproval(item, index) {
-  const id = pick(item.id, index + 1);
-  return {
-    id: toText(id, `APR-${index + 1}`),
-    title: toText(pick(item.titulo, item.title, item.observacao, item.descricao, `Aprovacao ${pick(item.rdo_id, id)}`)),
-    owner: toText(pick(item.usuario_nome, item.owner, item.aprovador, item.usuario, item.responsavel, 'Sistema')),
-    priority: toText(pick(item.prioridade, item.priority, 'Media')),
-    date: formatDateTime(pick(item.aprovado_em, item.data, item.created_at, item.criado_em, item.updated_at)),
-    status: toText(pick(item.status, 'Pendente')),
-  };
-}
-
-function normalizeMedia(item, index) {
-  const id = pick(item.id, index + 1);
-  const url = resolveProductionAssetUrl(pick(item.caminho, item.url, item.arquivo, item.path));
-  const previewUrl = resolveProductionAssetUrl(
-    pick(item.miniatura_caminho, item.miniaturaUrl, item.miniatura_url, item.miniatura_nome_arquivo, item.caminho, item.url, item.arquivo, item.path),
+  return (
+    <button type={type} onClick={onClick} disabled={disabled} className={`${base} ${variants[variant]} ${className}`}>
+      {children}
+    </button>
   );
-  return {
-    id: toText(id, `MID-${index + 1}`),
-    title: toText(pick(item.descricao, item.nome, item.titulo, `Midia ${pick(item.tipo, id)}`)),
-    type: toText(pick(item.tipo, item.type, 'Arquivo')).toUpperCase(),
-    meta: [
-      pick(item.obra_nome, item.obra, item.obra_id ? `Obra ${item.obra_id}` : null),
-      formatDateTime(pick(item.capturado_em, item.created_at, item.data)),
-    ]
-      .filter(Boolean)
-      .join(' • ') || 'Sem metadados',
-    url,
-    previewUrl,
-    kind: getMediaKind(url, pick(item.tipo, item.type)),
-    owner: toText(pick(item.usuario_nome, item.usuario, item.responsavel, item.autor, 'Equipe de campo')),
-    rdoId: toText(pick(item.rdo_id, item.rdoId, item.rdo, '')),
-  };
 }
 
-function resolveProductionAssetUrl(value) {
-  if (!value) return '';
-
-  const url = String(value).trim();
-  if (/^https?:\/\//i.test(url)) return url;
-  if (url.startsWith('//')) return `https:${url}`;
-
-  const cleanedPath = url.replace(/^\/+/, '');
-  return `${ASSET_BASE_URL}${cleanedPath}`;
-}
-
-function getMediaKind(url, explicitType) {
-  const type = toText(explicitType, '').toLowerCase();
-  if (type.includes('video')) return 'video';
-  if (type.includes('image') || type.includes('imagem') || type.includes('foto')) return 'image';
-  if (type.includes('pdf') || type.includes('doc') || type.includes('xls')) return 'document';
-
-  const fileName = toText(url, '').split('?')[0].toLowerCase();
-  if (/\.(jpg|jpeg|png|webp|gif)$/i.test(fileName)) return 'image';
-  if (/\.(mp4|mov|webm)$/i.test(fileName)) return 'video';
-  if (/\.(pdf|doc|docx|xls|xlsx|txt|dwg)$/i.test(fileName)) return 'document';
-  return 'document';
-}
-
-function resourceLabel(resource) {
-  return resource.charAt(0).toUpperCase() + resource.slice(1);
-}
-
-function getApiErrorMessage(error) {
-  if (axios.isAxiosError(error)) {
-    return error.response?.data?.erro || error.message || 'Falha na API';
-  }
-  return error instanceof Error ? error.message : 'Erro desconhecido';
-}
-
-function buildRdoRanking(obras, rdos) {
-  const counts = new Map();
-
-  rdos.forEach((rdo) => {
-    const obraId = rdo.obraId;
-    const obraKey = obraId ? String(obraId) : rdo.obra;
-    const label = obraId
-      ? obras.find((obra) => String(obra.id) === String(obraId))?.nome || rdo.obra
-      : rdo.obra;
-
-    const current = counts.get(obraKey) || { name: label, count: 0 };
-    counts.set(obraKey, { name: current.name, count: current.count + 1 });
-  });
-
-  return Array.from(counts.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8);
-}
-
-function buildMediaDistribution(midias) {
-  const counts = new Map();
-
-  midias.forEach((midia) => {
-    const key = midia.obraId ? String(midia.obraId) : midia.obra;
-    const current = counts.get(key) || { name: midia.obra, count: 0 };
-    counts.set(key, { name: current.name, count: current.count + 1 });
-  });
-
-  return Array.from(counts.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8);
-}
-
-function toCoordinate(value) {
-  if (value === undefined || value === null || value === '') return null;
-  const normalized = Number(String(value).replace(',', '.'));
-  return Number.isFinite(normalized) ? normalized : null;
-}
-
-function buildMapPoints(midias, aprovacoes) {
-  const mediaPoints = midias
-    .map((item, index) => {
-      const latitude = toCoordinate(item.latitude);
-      const longitude = toCoordinate(item.longitude);
-
-      if (latitude === null || longitude === null) return null;
-
-      return {
-        id: `media-${item.id || index}`,
-        kind: 'media',
-        label: item.title,
-        sublabel: item.obra,
-        latitude,
-        longitude,
-      };
-    })
-    .filter(Boolean);
-
-  const approvalPoints = aprovacoes
-    .map((item, index) => {
-      const latitude = toCoordinate(item.latitude);
-      const longitude = toCoordinate(item.longitude);
-
-      if (latitude === null || longitude === null) return null;
-
-      return {
-        id: `approval-${item.id || index}`,
-        kind: 'approval',
-        label: item.title,
-        sublabel: item.owner,
-        latitude,
-        longitude,
-      };
-    })
-    .filter(Boolean);
-  return {
-    mediaPoints,
-    approvalPoints,
-    allPoints: [...mediaPoints, ...approvalPoints],
-  };
-}
-
+// ─────────────────────────────────────────────
+// TELA: OBRAS
+// ─────────────────────────────────────────────
 function ObrasScreen({ obras, loading, error, expandedObra, onToggleObra, onOpenRdo, onOpenEdit, onOpenHistory }) {
-  const activeCount = obras.length;
-  const totalRdos = obras.reduce((sum, obra) => sum + (Number(obra.rdos) || 0), 0);
-  const pendingCount = obras.filter((obra) => {
-    const value = obra.status.toLowerCase();
-    return value.includes('pendente') || value.includes('atras') || value.includes('aguard');
-  }).length;
+  const activeCount  = obras.length;
+  const totalRdos    = obras.reduce((s, o) => s + (Number(o.rdos) || 0), 0);
+  const pendingCount = obras.filter((o) => ['pendente','atras','aguard'].some((w) => o.status.toLowerCase().includes(w))).length;
 
   return (
     <PageShell
       title="Gestao de Obras"
       subtitle="Status operacional / RDO"
-      action={
-        <button className="rounded-xl border border-[#0f1729] bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white transition hover:bg-black">
-          Atualizar obras
-        </button>
-      }
+      action={<Btn variant="dark"><i className="fa-solid fa-rotate-right text-xs" />Atualizar obras</Btn>}
     >
-      <div className="grid gap-4 lg:grid-cols-3">
-        <StatCard label="Obras ativas" value={String(activeCount).padStart(2, '0')} hint="Carregadas da API" tone="amber" />
-        <StatCard label="RDOs totais" value={String(totalRdos)} hint="Somatorio dos registros" tone="emerald" />
-        <StatCard label="Pendencias" value={String(pendingCount).padStart(2, '0')} hint="Status em alerta" tone="red" />
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard label="Obras ativas"  value={String(activeCount).padStart(2,'0')}  hint="Carregadas da API"     tone="amber" />
+        <StatCard label="RDOs totais"   value={String(totalRdos)}                    hint="Somatorio dos registros" tone="emerald" />
+        <StatCard label="Pendencias"    value={String(pendingCount).padStart(2,'0')} hint="Status em alerta"       tone="red" />
       </div>
 
-      {error && (
-        <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBanner message={error} className="mt-4" />}
 
-      <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {loading && (
-          <div className="border-b border-slate-100 px-5 py-4 text-sm text-slate-500">
-            Carregando obras da API...
-          </div>
-        )}
-
-        {!loading && obras.length === 0 && !error && (
-          <div className="px-5 py-10 text-center text-sm text-slate-500">
-            Nenhuma obra retornada pela API.
-          </div>
-        )}
+      <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        {loading && <LoadingRow label="Sincronizando obras com Suape..." />}
+        {!loading && obras.length === 0 && !error && <EmptyRow label="Nenhuma obra retornada pela API." />}
 
         {obras.map((obra) => {
-          const isExpanded = expandedObra === obra.id;
+          const expanded = expandedObra === obra.id;
           return (
             <div key={obra.id} className="border-b border-slate-100 last:border-b-0">
-              <div className={`relative flex flex-col gap-4 px-5 py-5 text-left transition hover:bg-slate-50 sm:flex-row sm:items-center sm:justify-between ${isExpanded ? 'bg-slate-50/70' : ''}`}>
-                {isExpanded && <span className="absolute left-0 top-0 h-full w-1 bg-[#f5c518]" />}
+              <div className={`relative transition-colors duration-150 ${expanded ? 'bg-slate-50' : 'hover:bg-slate-50/60'}`}>
+                {expanded && <span className="absolute inset-y-0 left-0 w-[3px] rounded-r bg-[#f5c518]" />}
                 <button
                   type="button"
                   onClick={() => onToggleObra(obra.id)}
-                  className="flex flex-1 flex-col gap-4 text-left sm:flex-row sm:items-center sm:justify-between"
+                  className="flex w-full flex-col gap-4 px-5 py-5 text-left sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div>
-                    <span className={`inline-flex rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.2em] ${obra.cor}`}>
+                  <div className="min-w-0">
+                    <Badge tone={obra.cor.includes('rose') ? 'red' : obra.cor.includes('amber') ? 'amber' : 'emerald'}>
                       {obra.status}
-                    </span>
-                    <h2 className="mt-3 text-xl font-black uppercase tracking-wide text-[#0f1729]">{obra.nome}</h2>
-                    <p className="mt-1 text-xs font-bold uppercase tracking-[0.22em] text-slate-400">C: {obra.contrato}</p>
+                    </Badge>
+                    <h2 className="mt-2.5 truncate text-xl font-black uppercase tracking-wide text-[#0f1729]">{obra.nome}</h2>
+                    <p className="mt-0.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">Contrato: {obra.contrato}</p>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-6">
-                    <div className="rounded-xl border border-slate-100 bg-white px-4 py-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-300">Equipe</p>
-                      <p className="mt-1 text-sm font-bold text-[#0f1729]">{obra.equipe} integrantes</p>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      {[['Equipe', obra.equipe, 'integrantes'], ['RDOs', obra.rdos, 'registros'], ['Progresso', obra.progresso, '%']].map(([k, v, s]) => (
+                        <div key={k} className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 text-center">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-slate-300">{k}</p>
+                          <p className="mt-1 text-sm font-black text-[#0f1729]">{v}<span className="ml-0.5 text-[10px] font-bold text-slate-400">{s}</span></p>
+                        </div>
+                      ))}
                     </div>
-                    <div className="rounded-xl border border-slate-100 bg-white px-4 py-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-300">RDOs</p>
-                      <p className="mt-1 text-sm font-bold text-[#0f1729]">{obra.rdos} registros</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-100 bg-white px-4 py-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-300">Progresso</p>
-                      <p className="mt-1 text-sm font-bold text-[#0f1729]">{obra.progresso}% concluido</p>
-                    </div>
+                    <i className={`fa-solid fa-chevron-down text-sm text-slate-300 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
                   </div>
                 </button>
               </div>
 
-              <div className={`overflow-hidden border-t border-slate-100 transition-all duration-300 ${isExpanded ? 'max-h-48' : 'max-h-0'}`}>
+              <div className={`overflow-hidden border-t border-slate-100 transition-all duration-300 ease-in-out ${expanded ? 'max-h-40 opacity-100' : 'max-h-0 opacity-0'}`}>
                 <div className="grid gap-px bg-slate-100 sm:grid-cols-4">
                   {[
-                    ['Novo RDO', 'fa-file-circle-plus', () => onOpenRdo(obra)],
-                    ['Historico', 'fa-clock-rotate-left', () => onOpenHistory(obra)],
-                    ['Editar obra', 'fa-pen-to-square', () => onOpenEdit(obra)],
-                    ['Excluir', 'fa-trash-can'],
-                  ].map(([label, icon, action]) => (
+                    ['Novo RDO',   'fa-file-circle-plus',   'text-[#f5c518]', () => onOpenRdo(obra)],
+                    ['Historico',  'fa-clock-rotate-left',  'text-slate-400', () => onOpenHistory(obra)],
+                    ['Editar obra','fa-pen-to-square',      'text-slate-400', () => onOpenEdit(obra)],
+                    ['Excluir',    'fa-trash-can',          'text-rose-300',  null],
+                  ].map(([label, icon, color, action]) => (
                     <button
                       key={label}
                       type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (action) action();
-                      }}
-                      className="flex flex-col items-center justify-center gap-2 bg-white px-4 py-6 text-center transition hover:bg-slate-50"
+                      onClick={(e) => { e.stopPropagation(); action?.(); }}
+                      className="group/btn flex flex-col items-center justify-center gap-2 bg-white px-4 py-5 text-center transition-colors duration-150 hover:bg-slate-50 active:bg-slate-100"
                     >
-                      <i className={`fa-solid ${icon} text-lg text-slate-400`} />
-                      <span className="text-[10px] font-black uppercase tracking-[0.24em] text-[#0f1729]">{label}</span>
+                      <i className={`fa-solid ${icon} text-base ${color} transition-transform duration-150 group-hover/btn:scale-110`} />
+                      <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">{label}</span>
                     </button>
                   ))}
                 </div>
@@ -556,426 +482,188 @@ function ObrasScreen({ obras, loading, error, expandedObra, onToggleObra, onOpen
   );
 }
 
-function ObraModal({
-  mode,
-  tab,
-  obra,
-  rdos,
-  midias,
-  aprovacoes,
-  onClose,
-  onSetTab,
-  onCreateRdo,
-  onCreateMedia,
-  onCreateApproval,
-  onUpdateObra,
-  onOpenMap,
-}) {
-  const [rdoForm, setRdoForm] = useState({
-    data_rdo: new Date().toISOString().slice(0, 10),
-    atividades: '',
-    comentarios: '',
-    status: 'RASCUNHO',
-  });
-  const [approvalForm, setApprovalForm] = useState({
-    rdo_id: '',
-    status: 'APROVADO',
-    observacao: '',
-  });
-  const [editForm, setEditForm] = useState({
-    nome: obra?.nome || '',
-    contrato: obra?.contrato || '',
-    status: obra?.status || '',
-    progresso: obra?.progresso || '0',
-  });
-  const [mediaFile, setMediaFile] = useState(null);
-  const [mediaRdoId, setMediaRdoId] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState('');
+// ─────────────────────────────────────────────
+// MODAL: OBRA (RDO / HISTÓRICO / EDIÇÃO)
+// ─────────────────────────────────────────────
+function ObraModal({ mode, tab, obra, rdos, midias, aprovacoes, onClose, onSetTab, onCreateRdo, onCreateMedia, onCreateApproval, onUpdateObra, onOpenMap }) {
+  const [rdoForm,      setRdoForm]      = useState({ data_rdo: new Date().toISOString().slice(0,10), atividades: '', comentarios: '', status: 'RASCUNHO' });
+  const [approvalForm, setApprovalForm] = useState({ rdo_id: '', status: 'APROVADO', observacao: '' });
+  const [editForm,     setEditForm]     = useState({ nome: obra?.nome || '', contrato: obra?.contrato || '', status: obra?.status || '', progresso: obra?.progresso || '0' });
+  const [mediaFile,    setMediaFile]    = useState(null);
+  const [mediaRdoId,   setMediaRdoId]   = useState('');
+  const [busy,         setBusy]         = useState(false);
+  const [feedback,     setFeedback]     = useState('');
 
-  useEffect(() => {
-    if (mode !== 'rdo') return;
-    onSetTab(tab === 'history' ? 'rdo' : tab);
-  }, [mode, onSetTab, tab]);
-
+  useEffect(() => { if (mode !== 'rdo') return; onSetTab(tab === 'history' ? 'rdo' : tab); }, [mode, onSetTab, tab]);
   if (!obra) return null;
 
-  const obraRdos = rdos.filter((item) => String(item.obraId) === String(obra.id) || item.obra === obra.nome);
-  const obraMidias = midias.filter((item) => String(item.obraId) === String(obra.id) || item.obra === obra.nome);
-  const obraAprovacoes = aprovacoes.filter((item) => String(item.obraId) === String(obra.id) || item.obra === obra.nome);
-  const historyItems = [
-    ...obraAprovacoes.map((item) => ({
-      id: `APR-${item.id}`,
-      type: 'Aprovacao',
-      title: item.title,
-      date: item.date,
-      place: item.obra,
-      latitude: item.latitude,
-      longitude: item.longitude,
-    })),
-    ...obraMidias.map((item) => ({
-      id: `MID-${item.id}`,
-      type: 'Midia',
-      title: item.title,
-      date: item.meta,
-      place: item.obra,
-      latitude: item.latitude,
-      longitude: item.longitude,
-    })),
+  const obraRdos       = rdos.filter((r)  => String(r.obraId) === String(obra.id) || r.obra === obra.nome);
+  const obraMidias     = midias.filter((m) => String(m.obraId) === String(obra.id) || m.obra === obra.nome);
+  const obraAprovacoes = aprovacoes.filter((a) => String(a.obraId) === String(obra.id) || a.obra === obra.nome);
+  const historyItems   = [
+    ...obraAprovacoes.map((a) => ({ id: `APR-${a.id}`, type: 'Aprovacao', title: a.title,  date: a.date,  latitude: a.latitude,  longitude: a.longitude })),
+    ...obraMidias.map((m)     => ({ id: `MID-${m.id}`, type: 'Midia',     title: m.title,  date: m.meta,  latitude: m.latitude,  longitude: m.longitude })),
   ];
 
-  const submitRdo = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setFeedback('');
+  const wrap = async (fn) => { setBusy(true); setFeedback(''); try { await fn(); } catch (e) { setFeedback(e instanceof Error ? e.message : 'Erro desconhecido.'); } finally { setBusy(false); } };
 
-    try {
-      await onCreateRdo({
-        obra_id: obra.id,
-        data_rdo: rdoForm.data_rdo,
-        atividades: rdoForm.atividades,
-        comentarios: rdoForm.comentarios,
-        status: rdoForm.status,
-      });
-      setFeedback('RDO salvo com sucesso.');
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Falha ao salvar RDO.');
-    } finally {
-      setBusy(false);
-    }
-  };
+  const submitRdo      = (e) => { e.preventDefault(); wrap(async () => { await onCreateRdo({ obra_id: obra.id, data_rdo: rdoForm.data_rdo, atividades: rdoForm.atividades, comentarios: rdoForm.comentarios, status: rdoForm.status }); setFeedback('RDO salvo com sucesso.'); }); };
+  const submitMedia    = (e) => { e.preventDefault(); wrap(async () => { await onCreateMedia({ file: mediaFile, obraId: obra.id, rdoId: mediaRdoId }); setFeedback('Mídia enviada com sucesso.'); }); };
+  const submitApproval = (e) => { e.preventDefault(); wrap(async () => { await onCreateApproval({ obra_id: obra.id, rdo_id: approvalForm.rdo_id, status: approvalForm.status, observacao: approvalForm.observacao }); setFeedback('Aprovação criada com sucesso.'); }); };
+  const submitEdit     = (e) => { e.preventDefault(); wrap(async () => { await onUpdateObra(obra.id, { nome: editForm.nome, contrato: editForm.contrato, status: editForm.status, progresso: editForm.progresso }); setFeedback('Obra atualizada com sucesso.'); }); };
 
-  const submitMedia = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setFeedback('');
-
-    try {
-      await onCreateMedia({
-        file: mediaFile,
-        obraId: obra.id,
-        rdoId: mediaRdoId,
-      });
-      setFeedback('Mídia enviada com sucesso.');
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Falha ao enviar mídia.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submitApproval = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setFeedback('');
-
-    try {
-      await onCreateApproval({
-        obra_id: obra.id,
-        rdo_id: approvalForm.rdo_id,
-        status: approvalForm.status,
-        observacao: approvalForm.observacao,
-      });
-      setFeedback('Aprovação criada com sucesso.');
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Falha ao salvar aprovação.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submitEdit = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setFeedback('');
-
-    try {
-      await onUpdateObra(obra.id, {
-        nome: editForm.nome,
-        contrato: editForm.contrato,
-        status: editForm.status,
-        progresso: editForm.progresso,
-      });
-      setFeedback('Obra atualizada com sucesso.');
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Falha ao atualizar obra.');
-    } finally {
-      setBusy(false);
-    }
-  };
+  const inputCls  = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-[#0f1729] outline-none transition-all duration-150 focus:border-[#f5c518] focus:ring-2 focus:ring-[#f5c518]/20 placeholder:text-slate-300';
+  const labelCls  = 'text-[10px] font-black uppercase tracking-[0.3em] text-slate-400';
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-[28px] bg-white shadow-2xl">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-[28px] bg-white shadow-2xl animate-in zoom-in-95 duration-200">
+
+        {/* Header */}
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">
               {mode === 'history' ? 'Historico da obra' : mode === 'edit' ? 'Editar obra' : 'Novo registro'}
             </p>
-            <h2 className="mt-2 text-2xl font-black uppercase tracking-wide text-[#0f1729]">{obra.nome}</h2>
-            <p className="mt-1 text-sm text-slate-500">C: {obra.contrato}</p>
+            <h2 className="mt-1.5 text-2xl font-black uppercase tracking-tight text-[#0f1729]">{obra.nome}</h2>
+            <p className="mt-0.5 text-sm text-slate-400">Contrato: {obra.contrato}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-[#0f1729]"
-          >
-            <i className="fa-solid fa-xmark" />
+          <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-400 transition-all duration-150 hover:border-slate-300 hover:bg-slate-50 hover:text-[#0f1729] active:scale-90">
+            <i className="fa-solid fa-xmark text-sm" />
           </button>
         </div>
 
-        <div className="border-b border-slate-100 px-6 pt-4">
-          <div className="flex flex-wrap gap-2">
-            {mode === 'rdo' && (
-              <>
-                {[
-                  ['rdo', 'Novo RDO'],
-                  ['media', 'Adicionar mídia'],
-                  ['approval', 'Adicionar aprovação'],
-                ].map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => onSetTab(key)}
-                    className={`rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.24em] transition ${
-                      tab === key
-                        ? 'bg-[#0f1729] text-white'
-                        : 'border border-slate-200 bg-white text-slate-500 hover:border-[#f5c518] hover:text-[#0f1729]'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </>
-            )}
+        {/* Tabs */}
+        <div className="border-b border-slate-100 px-6 pt-3 pb-0">
+          <div className="flex flex-wrap gap-1">
+            {mode === 'rdo' && [['rdo','Novo RDO'],['media','Adicionar Midia'],['approval','Aprovacao']].map(([key, label]) => (
+              <button key={key} type="button" onClick={() => onSetTab(key)}
+                className={`rounded-t-xl px-4 py-2.5 text-[11px] font-black uppercase tracking-[0.22em] transition-all duration-150 ${tab === key ? 'border-b-2 border-[#f5c518] text-[#0f1729]' : 'text-slate-400 hover:text-slate-600'}`}
+              >{label}</button>
+            ))}
             {mode === 'history' && (
-              <button
-                type="button"
-                onClick={() => onOpenMap()}
-                className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-black uppercase tracking-[0.24em] text-sky-700 transition hover:bg-sky-100"
-              >
-                Ver no mapa
+              <button type="button" onClick={() => onOpenMap()} className="mb-2 rounded-full border border-sky-200 bg-sky-50 px-4 py-1.5 text-[11px] font-black uppercase tracking-widest text-sky-700 transition-colors hover:bg-sky-100">
+                <i className="fa-solid fa-map-location-dot mr-2 text-xs" />Ver no mapa
               </button>
             )}
           </div>
         </div>
 
-        <div className="grid max-h-[calc(92vh-170px)] gap-4 overflow-y-auto p-6 lg:grid-cols-[1.15fr_0.85fr]">
+        {/* Body */}
+        <div className="grid max-h-[calc(92vh-170px)] gap-5 overflow-y-auto p-6 lg:grid-cols-[1.2fr_0.8fr]">
           <div className="space-y-4">
+            {/* ── RDO form ── */}
             {mode === 'rdo' && tab === 'rdo' && (
-              <form onSubmit={submitRdo} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Cadastro de RDO</p>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-2 sm:col-span-1">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Data</span>
-                    <input
-                      type="date"
-                      value={rdoForm.data_rdo}
-                      onChange={(event) => setRdoForm((current) => ({ ...current, data_rdo: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                      required
-                    />
+              <form onSubmit={submitRdo} className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+                <p className={labelCls}>Cadastro de RDO</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1.5">
+                    <span className={labelCls}>Data</span>
+                    <input type="date" value={rdoForm.data_rdo} onChange={(e) => setRdoForm((c) => ({...c, data_rdo: e.target.value}))} className={inputCls} required />
                   </label>
-                  <label className="grid gap-2 sm:col-span-1">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Status</span>
-                    <select
-                      value={rdoForm.status}
-                      onChange={(event) => setRdoForm((current) => ({ ...current, status: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    >
+                  <label className="grid gap-1.5">
+                    <span className={labelCls}>Status</span>
+                    <select value={rdoForm.status} onChange={(e) => setRdoForm((c) => ({...c, status: e.target.value}))} className={inputCls}>
                       <option value="RASCUNHO">Rascunho</option>
                       <option value="ENVIADO">Enviado</option>
                       <option value="APROVADO">Aprovado</option>
                     </select>
                   </label>
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Atividades</span>
-                    <textarea
-                      value={rdoForm.atividades}
-                      onChange={(event) => setRdoForm((current) => ({ ...current, atividades: event.target.value }))}
-                      rows="4"
-                      className="rounded-2xl border border-slate-200 px-3 py-2 text-sm"
-                      required
-                    />
+                  <label className="grid gap-1.5 sm:col-span-2">
+                    <span className={labelCls}>Atividades</span>
+                    <textarea value={rdoForm.atividades} onChange={(e) => setRdoForm((c) => ({...c, atividades: e.target.value}))} rows="4" className={inputCls} required />
                   </label>
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Comentarios</span>
-                    <textarea
-                      value={rdoForm.comentarios}
-                      onChange={(event) => setRdoForm((current) => ({ ...current, comentarios: event.target.value }))}
-                      rows="3"
-                      className="rounded-2xl border border-slate-200 px-3 py-2 text-sm"
-                    />
+                  <label className="grid gap-1.5 sm:col-span-2">
+                    <span className={labelCls}>Comentarios</span>
+                    <textarea value={rdoForm.comentarios} onChange={(e) => setRdoForm((c) => ({...c, comentarios: e.target.value}))} rows="3" className={inputCls} />
                   </label>
                 </div>
-                <div className="mt-4 flex gap-3">
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    className="rounded-xl bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white transition hover:bg-black disabled:opacity-60"
-                  >
-                    {busy ? 'Salvando...' : 'Salvar RDO'}
-                  </button>
-                  <span className="self-center text-sm text-slate-500">RDO será vinculado à obra atual.</span>
-                </div>
+                <Btn type="submit" variant="dark" disabled={busy}>{busy ? 'Salvando...' : 'Salvar RDO'}</Btn>
               </form>
             )}
 
+            {/* ── Media form ── */}
             {mode === 'rdo' && tab === 'media' && (
-              <form onSubmit={submitMedia} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Adicionar mídia</p>
-                <div className="mt-4 grid gap-3">
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Arquivo</span>
-                    <input
-                      type="file"
-                      accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.dwg"
-                      onChange={(event) => setMediaFile(event.target.files?.[0] || null)}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                      required
-                    />
-                  </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">RDO relacionado</span>
-                    <select
-                      value={mediaRdoId}
-                      onChange={(event) => setMediaRdoId(event.target.value)}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                      required
-                    >
-                      <option value="">Selecione um RDO</option>
-                      {obraRdos.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.id} • {item.obra}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="mt-4 flex gap-3">
-                  <button type="submit" disabled={busy} className="rounded-xl bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white disabled:opacity-60">
-                    {busy ? 'Enviando...' : 'Enviar mídia'}
-                  </button>
-                </div>
+              <form onSubmit={submitMedia} className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+                <p className={labelCls}>Adicionar midia</p>
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>Arquivo</span>
+                  <input type="file" accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.dwg" onChange={(e) => setMediaFile(e.target.files?.[0] || null)} className={inputCls} required />
+                </label>
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>RDO relacionado</span>
+                  <select value={mediaRdoId} onChange={(e) => setMediaRdoId(e.target.value)} className={inputCls} required>
+                    <option value="">Selecione um RDO</option>
+                    {obraRdos.map((r) => <option key={r.id} value={r.id}>{r.id} • {r.obra}</option>)}
+                  </select>
+                </label>
+                <Btn type="submit" variant="dark" disabled={busy}>{busy ? 'Enviando...' : 'Enviar midia'}</Btn>
               </form>
             )}
 
+            {/* ── Approval form ── */}
             {mode === 'rdo' && tab === 'approval' && (
-              <form onSubmit={submitApproval} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Adicionar aprovação</p>
-                <div className="mt-4 grid gap-3">
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">RDO</span>
-                    <select
-                      value={approvalForm.rdo_id}
-                      onChange={(event) => setApprovalForm((current) => ({ ...current, rdo_id: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                      required
-                    >
-                      <option value="">Selecione um RDO</option>
-                      {obraRdos.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.id} • {item.obra}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Status</span>
-                    <select
-                      value={approvalForm.status}
-                      onChange={(event) => setApprovalForm((current) => ({ ...current, status: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    >
-                      <option value="APROVADO">Aprovado</option>
-                      <option value="PENDENTE">Pendente</option>
-                      <option value="REPROVADO">Reprovado</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Observação</span>
-                    <textarea
-                      value={approvalForm.observacao}
-                      onChange={(event) => setApprovalForm((current) => ({ ...current, observacao: event.target.value }))}
-                      rows="3"
-                      className="rounded-2xl border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </label>
-                </div>
-                <div className="mt-4 flex gap-3">
-                  <button type="submit" disabled={busy} className="rounded-xl bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white disabled:opacity-60">
-                    {busy ? 'Salvando...' : 'Salvar aprovação'}
-                  </button>
-                </div>
+              <form onSubmit={submitApproval} className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+                <p className={labelCls}>Adicionar aprovacao</p>
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>RDO</span>
+                  <select value={approvalForm.rdo_id} onChange={(e) => setApprovalForm((c) => ({...c, rdo_id: e.target.value}))} className={inputCls} required>
+                    <option value="">Selecione um RDO</option>
+                    {obraRdos.map((r) => <option key={r.id} value={r.id}>{r.id} • {r.obra}</option>)}
+                  </select>
+                </label>
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>Status</span>
+                  <select value={approvalForm.status} onChange={(e) => setApprovalForm((c) => ({...c, status: e.target.value}))} className={inputCls}>
+                    <option value="APROVADO">Aprovado</option>
+                    <option value="PENDENTE">Pendente</option>
+                    <option value="REPROVADO">Reprovado</option>
+                  </select>
+                </label>
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>Observacao</span>
+                  <textarea value={approvalForm.observacao} onChange={(e) => setApprovalForm((c) => ({...c, observacao: e.target.value}))} rows="3" className={inputCls} />
+                </label>
+                <Btn type="submit" variant="dark" disabled={busy}>{busy ? 'Salvando...' : 'Salvar aprovacao'}</Btn>
               </form>
             )}
 
+            {/* ── Edit form ── */}
             {mode === 'edit' && (
-              <form onSubmit={submitEdit} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Informações da obra</p>
-                <div className="mt-4 grid gap-3">
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Nome</span>
-                    <input
-                      value={editForm.nome}
-                      onChange={(event) => setEditForm((current) => ({ ...current, nome: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                      required
-                    />
+              <form onSubmit={submitEdit} className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+                <p className={labelCls}>Informacoes da obra</p>
+                {[['Nome','nome','text',true],['Contrato','contrato','text',false]].map(([lbl, key, type, req]) => (
+                  <label key={key} className="grid gap-1.5">
+                    <span className={labelCls}>{lbl}</span>
+                    <input type={type} value={editForm[key]} onChange={(e) => setEditForm((c) => ({...c, [key]: e.target.value}))} className={inputCls} required={req} />
                   </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Contrato</span>
-                    <input
-                      value={editForm.contrato}
-                      onChange={(event) => setEditForm((current) => ({ ...current, contrato: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </label>
-                  <label className="grid gap-2 sm:grid-cols-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400 sm:col-span-2">Status</span>
-                    <input
-                      value={editForm.status}
-                      onChange={(event) => setEditForm((current) => ({ ...current, status: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Progresso</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={editForm.progresso}
-                      onChange={(event) => setEditForm((current) => ({ ...current, progresso: event.target.value }))}
-                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    />
-                  </label>
-                </div>
-                <div className="mt-4 flex gap-3">
-                  <button type="submit" disabled={busy} className="rounded-xl bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white disabled:opacity-60">
-                    {busy ? 'Salvando...' : 'Salvar obra'}
-                  </button>
-                </div>
+                ))}
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>Status</span>
+                  <input value={editForm.status} onChange={(e) => setEditForm((c) => ({...c, status: e.target.value}))} className={inputCls} />
+                </label>
+                <label className="grid gap-1.5">
+                  <span className={labelCls}>Progresso (%)</span>
+                  <input type="number" min="0" max="100" value={editForm.progresso} onChange={(e) => setEditForm((c) => ({...c, progresso: e.target.value}))} className={inputCls} />
+                </label>
+                <Btn type="submit" variant="dark" disabled={busy}>{busy ? 'Salvando...' : 'Salvar obra'}</Btn>
               </form>
             )}
 
+            {/* ── History ── */}
             {mode === 'history' && (
-              <div className="space-y-3 rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Movimentações</p>
-                {historyItems.length === 0 && <div className="text-sm text-slate-500">Nenhuma movimentação encontrada.</div>}
+              <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+                <p className={labelCls}>Movimentacoes</p>
+                {historyItems.length === 0 && <EmptyRow label="Nenhuma movimentacao encontrada." />}
                 {historyItems.map((item) => (
-                  <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-4 transition-shadow hover:shadow-sm">
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">{item.type}</p>
+                        <Badge>{item.type}</Badge>
                         <h3 className="mt-2 text-sm font-bold text-[#0f1729]">{item.title}</h3>
-                        <p className="mt-1 text-xs text-slate-500">{item.date}</p>
+                        <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={onOpenMap}
-                        className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.24em] text-sky-700"
-                      >
+                      <button type="button" onClick={onOpenMap} className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-sky-700 transition-colors hover:bg-sky-100">
                         Ver mapa
                       </button>
                     </div>
@@ -985,28 +673,25 @@ function ObraModal({
             )}
           </div>
 
+          {/* Sidebar do modal */}
           <div className="space-y-4">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Resumo da obra</p>
-              <div className="mt-4 space-y-3 text-sm">
-                <div className="flex items-center justify-between rounded-2xl border border-slate-100 px-4 py-3">
-                  <span className="text-slate-500">RDOs</span>
-                  <strong className="text-[#0f1729]">{obraRdos.length}</strong>
-                </div>
-                <div className="flex items-center justify-between rounded-2xl border border-slate-100 px-4 py-3">
-                  <span className="text-slate-500">Mídias</span>
-                  <strong className="text-[#0f1729]">{obraMidias.length}</strong>
-                </div>
-                <div className="flex items-center justify-between rounded-2xl border border-slate-100 px-4 py-3">
-                  <span className="text-slate-500">Aprovações</span>
-                  <strong className="text-[#0f1729]">{obraAprovacoes.length}</strong>
-                </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className={labelCls}>Resumo da obra</p>
+              <div className="mt-4 space-y-2">
+                {[['RDOs', obraRdos.length], ['Midias', obraMidias.length], ['Aprovacoes', obraAprovacoes.length]].map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between rounded-xl border border-slate-100 px-4 py-2.5">
+                    <span className="text-sm text-slate-500">{k}</span>
+                    <strong className="text-base font-black text-[#0f1729]">{v}</strong>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Feedback</p>
-              <div className="mt-4 text-sm text-white/85">{feedback || 'Nenhuma ação enviada ainda.'}</div>
+            <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Feedback</p>
+              <div className={`mt-3 text-sm leading-relaxed ${feedback ? 'text-white' : 'text-white/40'}`}>
+                {feedback || 'Nenhuma acao enviada ainda.'}
+              </div>
             </div>
           </div>
         </div>
@@ -1015,67 +700,47 @@ function ObraModal({
   );
 }
 
+// ─────────────────────────────────────────────
+// TELA: RDO
+// ─────────────────────────────────────────────
 function RdoScreen({ rdos, loading, error }) {
-  const processedCount = rdos.filter((item) => {
-    const value = item.status.toLowerCase();
-    return value.includes('enviado') || value.includes('aprov') || value.includes('concl');
-  }).length;
+  const processedCount = rdos.filter((r) => ['enviado','aprov','concl'].some((w) => r.status.toLowerCase().includes(w))).length;
 
   return (
     <PageShell
       title="RDO"
       subtitle="Diario de obras"
-      action={
-        <button className="rounded-xl bg-[#f5c518] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-[#0f1729] transition hover:brightness-95">
-          Novo registro
-        </button>
-      }
+      action={<Btn variant="gold"><i className="fa-solid fa-plus text-xs" />Novo registro</Btn>}
     >
-      <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+      <div className="grid gap-5 lg:grid-cols-[1.25fr_0.75fr]">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Lista recente</p>
-              <h2 className="mt-2 text-2xl font-black text-[#0f1729]">Registros da API</h2>
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Lista recente</p>
+              <h2 className="mt-1 text-2xl font-black text-[#0f1729]">Registros da API</h2>
             </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">
-              {rdos.length} registros
-            </span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">{rdos.length} registros</span>
           </div>
 
-          {error && (
-            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-              {error}
-            </div>
-          )}
+          {error   && <ErrorBanner message={error} className="mt-4" />}
+          {loading && <LoadingRow label="Carregando RDOs da API..." className="mt-5" />}
+          {!loading && rdos.length === 0 && !error && <EmptyRow label="Nenhum RDO retornado pela API." className="mt-5" />}
 
-          {loading && (
-            <div className="mt-5 text-sm text-slate-500">Carregando RDOs da API...</div>
-          )}
-
-          {!loading && rdos.length === 0 && !error && (
-            <div className="mt-5 text-sm text-slate-500">Nenhum RDO retornado pela API.</div>
-          )}
-
-          <div className="mt-5 space-y-3">
+          <div className="mt-4 space-y-2.5">
             {rdos.map((item) => (
-              <article key={item.id} className="rounded-2xl border border-slate-100 p-4 transition hover:border-[#f5c518]/40 hover:bg-[#fffdf3]">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <article key={item.id} className="group rounded-2xl border border-slate-100 p-4 transition-all duration-150 hover:border-[#f5c518]/50 hover:bg-[#fffef7] hover:shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-sm border border-slate-100 bg-slate-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">
-                        {item.id}
-                      </span>
-                      <span className="rounded-sm border border-[#f5c518]/20 bg-[#f5c518]/10 px-2 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-[#9a7a00]">
-                        {item.status}
-                      </span>
+                      <Badge>{item.id}</Badge>
+                      <Badge tone="amber">{item.status}</Badge>
                     </div>
-                    <h3 className="mt-3 text-lg font-black uppercase tracking-wide text-[#0f1729]">{item.obra}</h3>
-                    <p className="mt-1 text-sm text-slate-500">{item.descricao}</p>
+                    <h3 className="mt-2.5 text-base font-black uppercase tracking-wide text-[#0f1729]">{item.obra}</h3>
+                    <p className="mt-0.5 text-sm text-slate-500 line-clamp-1">{item.descricao}</p>
                   </div>
-                  <div className="text-right">
-                    <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-300">{item.data}</p>
-                    <p className="mt-2 text-sm font-bold text-[#0f1729]">{item.turno}</p>
+                  <div className="shrink-0 text-right">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">{item.data}</p>
+                    <p className="mt-1 text-sm font-bold text-[#0f1729]">{item.turno}</p>
                   </div>
                 </div>
               </article>
@@ -1085,35 +750,31 @@ function RdoScreen({ rdos, loading, error }) {
 
         <div className="space-y-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Resumo</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Resumo</p>
             <div className="mt-4 space-y-4">
-              <div>
-                <div className="mb-2 flex items-center justify-between text-sm">
-                  <span className="font-bold text-slate-500">Processados</span>
-                  <span className="font-black text-[#0f1729]">{processedCount}</span>
+              {[['Processados', processedCount, 78], ['Pendentes', Math.max(rdos.length - processedCount, 0), 22]].map(([label, val, pct]) => (
+                <div key={label}>
+                  <div className="mb-1.5 flex items-center justify-between text-sm">
+                    <span className="font-bold text-slate-500">{label}</span>
+                    <span className="font-black text-[#0f1729]">{val}</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-100">
+                    <div className="h-1.5 rounded-full bg-gradient-to-r from-[#f5c518] to-[#d4a017] transition-all duration-700" style={{ width: `${pct}%` }} />
+                  </div>
                 </div>
-                <div className="h-2 rounded-full bg-slate-100">
-                  <div className="h-2 w-[78%] rounded-full bg-gradient-to-r from-[#f5c518] to-[#d8a800]" />
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 flex items-center justify-between text-sm">
-                  <span className="font-bold text-slate-500">Pendentes</span>
-                  <span className="font-black text-[#0f1729]">{Math.max(rdos.length - processedCount, 0)}</span>
-                </div>
-                <div className="h-2 rounded-full bg-slate-100">
-                  <div className="h-2 w-[22%] rounded-full bg-gradient-to-r from-emerald-500 to-emerald-600" />
-                </div>
-              </div>
+              ))}
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Fluxo rapido</p>
-            <div className="mt-4 space-y-3 text-sm">
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Coletar dados da obra</div>
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Registrar equipe e ocorrencias</div>
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Enviar para aprovacao</div>
+          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Fluxo rapido</p>
+            <div className="mt-4 space-y-2">
+              {['Coletar dados da obra','Registrar equipe e ocorrencias','Enviar para aprovacao'].map((s, i) => (
+                <div key={s} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#f5c518] text-[9px] font-black text-[#0f1729]">{i + 1}</span>
+                  <span className="text-sm text-white/80">{s}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -1122,48 +783,36 @@ function RdoScreen({ rdos, loading, error }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// TELA: APROVAÇÕES
+// ─────────────────────────────────────────────
 function AprovacoesScreen({ aprovacoes, loading, error }) {
-  const waitingCount = aprovacoes.filter((item) => {
-    const value = item.status.toLowerCase();
-    return value.includes('pend') || value.includes('aguard') || value.includes('rascunho');
-  }).length;
+  const waitingCount = aprovacoes.filter((a) => ['pend','aguard','rascunho'].some((w) => a.status.toLowerCase().includes(w))).length;
 
   return (
     <PageShell
       title="Aprovacoes"
       subtitle="Fila de validacao"
-      action={
-        <button className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-[#0f1729] transition hover:border-[#f5c518] hover:text-[#9a7a00]">
-          Revisar fila
-        </button>
-      }
+      action={<Btn variant="outline"><i className="fa-solid fa-list-check text-xs" />Revisar fila</Btn>}
     >
-      <div className="grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
+      <div className="grid gap-5 lg:grid-cols-[0.95fr_1.05fr]">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Pendencias</p>
-          {error && (
-            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-              {error}
-            </div>
-          )}
-          {loading && <div className="mt-4 text-sm text-slate-500">Carregando aprovacoes da API...</div>}
-          {!loading && aprovacoes.length === 0 && !error && (
-            <div className="mt-4 text-sm text-slate-500">Nenhuma aprovacao retornada pela API.</div>
-          )}
-          <div className="mt-4 space-y-3">
+          <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Pendencias</p>
+          {error   && <ErrorBanner message={error} className="mt-4" />}
+          {loading && <LoadingRow label="Carregando aprovacoes..." className="mt-4" />}
+          {!loading && aprovacoes.length === 0 && !error && <EmptyRow label="Nenhuma aprovacao retornada." className="mt-4" />}
+          <div className="mt-4 space-y-2.5">
             {aprovacoes.map((item) => (
-              <div key={item.id} className="rounded-2xl border border-slate-100 p-4">
-                <div className="flex items-start justify-between gap-4">
+              <div key={item.id} className="rounded-xl border border-slate-100 p-4 transition-shadow hover:shadow-sm">
+                <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-300">{item.id}</p>
-                    <h3 className="mt-2 text-lg font-black text-[#0f1729]">{item.title}</h3>
-                    <p className="mt-1 text-sm text-slate-500">{item.owner}</p>
+                    <Badge>{item.id}</Badge>
+                    <h3 className="mt-2 text-base font-black text-[#0f1729]">{item.title}</h3>
+                    <p className="mt-0.5 text-sm text-slate-500">{item.owner}</p>
                   </div>
-                  <span className="rounded-full bg-amber-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-[#9a7a00]">
-                    {item.status}
-                  </span>
+                  <Badge tone="amber">{item.status}</Badge>
                 </div>
-                <div className="mt-4 flex items-center justify-between text-xs font-bold text-slate-400">
+                <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-[11px] font-bold text-slate-400">
                   <span>Prioridade: {item.priority}</span>
                   <span>{item.date}</span>
                 </div>
@@ -1172,23 +821,23 @@ function AprovacoesScreen({ aprovacoes, loading, error }) {
           </div>
         </div>
 
-        <div className="grid gap-4">
+        <div className="space-y-5">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Painel</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Painel de status</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <StatCard label="Esperando" value={String(waitingCount)} hint="Itens na fila" tone="amber" />
-              <StatCard label="Aprovados" value={String(aprovacoes.length - waitingCount)} hint="Status concluidos" tone="emerald" />
-              <StatCard label="Total" value={String(aprovacoes.length)} hint="Registros da API" tone="red" />
+              <StatCard label="Esperando" value={String(waitingCount)}                            hint="Na fila"         tone="amber" />
+              <StatCard label="Aprovados" value={String(aprovacoes.length - waitingCount)}        hint="Concluidos"      tone="emerald" />
+              <StatCard label="Total"     value={String(aprovacoes.length)}                       hint="Registros API"   tone="red" />
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Checklist</p>
-            <div className="mt-4 space-y-3">
-              {['Conferir assinaturas', 'Validar fotos obrigatorias', 'Cruzar medicao e contrato', 'Liberar para proxima etapa'].map((step) => (
+          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Checklist de validacao</p>
+            <div className="mt-4 space-y-2">
+              {['Conferir assinaturas','Validar fotos obrigatorias','Cruzar medicao e contrato','Liberar para proxima etapa'].map((step, i) => (
                 <div key={step} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#f5c518] text-[10px] font-black text-[#0f1729]">•</span>
-                  <span className="text-sm">{step}</span>
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#f5c518]/20 text-[9px] font-black text-[#f5c518]">{i + 1}</span>
+                  <span className="text-sm text-white/80">{step}</span>
                 </div>
               ))}
             </div>
@@ -1199,391 +848,153 @@ function AprovacoesScreen({ aprovacoes, loading, error }) {
   );
 }
 
-function MidiasScreen({ midias, loading, error }) {
-  return (
-    <PageShell
-      title="Midias"
-      subtitle="Banco visual"
-      action={
-        <button className="rounded-xl bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white transition hover:bg-black">
-          Enviar midia
-        </button>
-      }
-    >
-      <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
-        <div className="grid gap-4 sm:grid-cols-2">
-          {error && (
-            <div className="sm:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-              {error}
-            </div>
-          )}
-          {loading && <div className="sm:col-span-2 text-sm text-slate-500">Carregando midias da API...</div>}
-          {!loading && midias.length === 0 && !error && (
-            <div className="sm:col-span-2 text-sm text-slate-500">Nenhuma midia retornada pela API.</div>
-          )}
-          {midias.map((item) => (
-            <article key={item.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <a
-                href={item.url || '#'}
-                target={item.url ? '_blank' : undefined}
-                rel={item.url ? 'noreferrer' : undefined}
-                className="block"
-              >
-                <div className="relative h-44 overflow-hidden bg-gradient-to-br from-slate-900 via-slate-700 to-[#f5c518] p-4">
-                  {item.kind === 'image' && (item.previewUrl || item.url) && (
-                    <img
-                      src={item.previewUrl || item.url}
-                      alt={item.title}
-                      className="absolute inset-0 h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  )}
-
-                  {item.kind === 'video' && item.url && (
-                    <video
-                      className="absolute inset-0 h-full w-full object-cover"
-                      src={item.url}
-                      controls
-                      preload="metadata"
-                    />
-                  )}
-
-                  {item.kind === 'document' && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-950/95 via-slate-800/90 to-[#f5c518]/80 p-4 text-white">
-                      <div className="text-center">
-                        <i className="fa-solid fa-file-lines text-5xl text-[#f5c518]" />
-                        <p className="mt-4 text-sm font-black uppercase tracking-[0.28em]">Abrir documento</p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="relative flex h-full items-end justify-between text-white">
-                    <span className="rounded-full border border-white/20 bg-black/35 px-3 py-1 text-[10px] font-black uppercase tracking-[0.28em] backdrop-blur">
-                      {item.kind.toUpperCase()}
-                    </span>
-                    <i className={`fa-solid ${item.kind === 'video' ? 'fa-circle-play' : item.kind === 'document' ? 'fa-up-right-from-square' : 'fa-camera'} text-2xl opacity-90`} />
-                  </div>
-                </div>
-              </a>
-              <div className="p-4">
-                <h3 className="text-lg font-black text-[#0f1729]">{item.title}</h3>
-                <p className="mt-1 text-sm text-slate-500">{item.meta}</p>
-                {item.url ? (
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 block break-all text-xs font-medium text-[#1d4ed8] underline decoration-[#f5c518] decoration-2 underline-offset-4"
-                  >
-                    Abrir arquivo
-                  </a>
-                ) : (
-                  <p className="mt-2 text-xs font-medium text-slate-400">Sem link disponível</p>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
-
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Upload rapido</p>
-            <div className="mt-4 rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 p-8 text-center">
-              <i className="fa-solid fa-cloud-arrow-up text-4xl text-[#f5c518]" />
-              <p className="mt-4 text-lg font-black text-[#0f1729]">Arraste as fotos aqui</p>
-              <p className="mt-2 text-sm text-slate-500">JPEG, PNG e MP4 liberados para as obras ativas.</p>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Indicadores</p>
-            <div className="mt-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Arquivos recebidos</span>
-                <strong className="text-lg">{midias.length}</strong>
-              </div>
-              <div className="h-2 rounded-full bg-white/10">
-                <div className="h-2 w-[68%] rounded-full bg-gradient-to-r from-[#f5c518] to-[#d8a800]" />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Origem API</span>
-                <strong className="text-lg">PHP</strong>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </PageShell>
-  );
-}
+// ─────────────────────────────────────────────
+// TELA: MÍDIAS (com upload)
+// ─────────────────────────────────────────────
+void function MidiasScreen() {}; // suprimido — substituído por MidiasUploadScreen
 
 function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
   const fileInputRef = useRef(null);
   const [pendingFile, setPendingFile] = useState(null);
-  const [obraId, setObraId] = useState('');
-  const [rdoId, setRdoId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [feedback, setFeedback] = useState('');
-  const [dropActive, setDropActive] = useState(false);
+  const [obraId,      setObraId]      = useState('');
+  const [rdoId,       setRdoId]       = useState('');
+  const [submitting,  setSubmitting]  = useState(false);
+  const [feedback,    setFeedback]    = useState('');
+  const [dropActive,  setDropActive]  = useState(false);
 
-  const resetUpload = () => {
-    setPendingFile(null);
-    setObraId('');
-    setRdoId('');
-    setFeedback('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
+  const reset    = () => { setPendingFile(null); setObraId(''); setRdoId(''); setFeedback(''); if (fileInputRef.current) fileInputRef.current.value = ''; };
+  const openPick = () => fileInputRef.current?.click();
+  const onFile   = (file) => { if (!file) return; setPendingFile(file); setFeedback('Arquivo selecionado. Informe a obra e o RDO antes de enviar.'); };
+  const onDrop   = (e)    => { e.preventDefault(); setDropActive(false); onFile(e.dataTransfer.files?.[0]); };
 
-  const openPicker = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFile = (file) => {
-    if (!file) return;
-    setPendingFile(file);
-    setFeedback('Arquivo selecionado. Informe a obra e o RDO antes de enviar.');
-  };
-
-  const handleDrop = (event) => {
-    event.preventDefault();
-    setDropActive(false);
-    handleFile(event.dataTransfer.files?.[0]);
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
-    if (!pendingFile) {
-      setFeedback('Escolha um arquivo antes de enviar.');
-      return;
-    }
-
-    setSubmitting(true);
-    setFeedback('');
-
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!pendingFile) { setFeedback('Escolha um arquivo antes de enviar.'); return; }
+    setSubmitting(true); setFeedback('');
     try {
-      await onUpload({
-        file: pendingFile,
-        obraId,
-        rdoId,
-      });
+      await onUpload({ file: pendingFile, obraId, rdoId });
       setFeedback('Arquivo enviado com sucesso para a API.');
-      resetUpload();
-    } catch (uploadError) {
-      setFeedback(uploadError instanceof Error ? uploadError.message : 'Falha ao enviar o arquivo.');
+      reset();
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Falha ao enviar o arquivo.');
     } finally {
       setSubmitting(false);
     }
   };
 
+  const inputCls = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-[#0f1729] outline-none transition-all duration-150 focus:border-[#f5c518] focus:ring-2 focus:ring-[#f5c518]/20';
+  const labelCls = 'text-[10px] font-black uppercase tracking-[0.3em] text-slate-400';
+
   return (
     <PageShell
       title="Midias"
       subtitle="Banco visual"
-      action={
-        <button
-          type="button"
-          onClick={openPicker}
-          className="rounded-xl bg-[#0f1729] px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-white transition hover:bg-black"
-        >
-          Enviar midia
-        </button>
-      }
+      action={<Btn variant="dark" onClick={openPick}><i className="fa-solid fa-cloud-arrow-up text-xs" />Enviar midia</Btn>}
     >
-      <div className="grid gap-4 lg:grid-cols-[1fr_0.95fr]">
-        <div className="grid gap-4 sm:grid-cols-2">
-          {error && (
-            <div className="sm:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-              {error}
-            </div>
-          )}
-          {loading && <div className="sm:col-span-2 text-sm text-slate-500">Carregando midias da API...</div>}
-          {!loading && midias.length === 0 && !error && (
-            <div className="sm:col-span-2 text-sm text-slate-500">Nenhuma midia retornada pela API.</div>
-          )}
+      <div className="grid gap-5 lg:grid-cols-[1fr_0.95fr]">
+        {/* Gallery */}
+        <div className="grid gap-4 sm:grid-cols-2 content-start">
+          {error   && <div className="sm:col-span-2"><ErrorBanner message={error} /></div>}
+          {loading && <div className="sm:col-span-2"><LoadingRow label="Carregando midias da API..." /></div>}
+          {!loading && midias.length === 0 && !error && <div className="sm:col-span-2"><EmptyRow label="Nenhuma midia retornada." /></div>}
+
           {midias.map((item) => (
-            <article key={item.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <a
-                href={item.url || '#'}
-                target={item.url ? '_blank' : undefined}
-                rel={item.url ? 'noreferrer' : undefined}
-                className="block"
-              >
-                <div className="relative h-44 overflow-hidden bg-gradient-to-br from-slate-900 via-slate-700 to-[#f5c518] p-4">
+            <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
+              <a href={item.url || '#'} target={item.url ? '_blank' : undefined} rel="noreferrer" className="block">
+                <div className="relative h-44 overflow-hidden bg-gradient-to-br from-slate-900 via-slate-700 to-[#f5c518]">
                   {item.kind === 'image' && (item.previewUrl || item.url) && (
-                    <img
-                      src={item.previewUrl || item.url}
-                      alt={item.title}
-                      className="absolute inset-0 h-full w-full object-cover"
-                      loading="lazy"
-                    />
+                    <img src={item.previewUrl || item.url} alt={item.title} className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" />
                   )}
-
                   {item.kind === 'video' && item.url && (
-                    <video
-                      className="absolute inset-0 h-full w-full object-cover"
-                      src={item.url}
-                      controls
-                      preload="metadata"
-                    />
+                    <video className="absolute inset-0 h-full w-full object-cover" src={item.url} controls preload="metadata" />
                   )}
-
                   {item.kind === 'document' && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-950/95 via-slate-800/90 to-[#f5c518]/80 p-4 text-white">
-                      <div className="text-center">
+                    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-950/90 to-[#f5c518]/70">
+                      <div className="text-center text-white">
                         <i className="fa-solid fa-file-lines text-5xl text-[#f5c518]" />
-                        <p className="mt-4 text-sm font-black uppercase tracking-[0.28em]">Abrir documento</p>
+                        <p className="mt-3 text-[11px] font-black uppercase tracking-widest">Abrir documento</p>
                       </div>
                     </div>
                   )}
-
-                  <div className="relative flex h-full items-end justify-between text-white">
-                    <span className="rounded-full border border-white/20 bg-black/35 px-3 py-1 text-[10px] font-black uppercase tracking-[0.28em] backdrop-blur">
-                      {item.kind.toUpperCase()}
-                    </span>
-                    <i className={`fa-solid ${item.kind === 'video' ? 'fa-circle-play' : item.kind === 'document' ? 'fa-up-right-from-square' : 'fa-camera'} text-2xl opacity-90`} />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
+                  <div className="relative flex h-full items-end justify-between p-3 text-white">
+                    <Badge tone="slate" className="!border-white/20 !bg-black/35 !text-white backdrop-blur">{item.kind.toUpperCase()}</Badge>
+                    <i className={`fa-solid ${item.kind === 'video' ? 'fa-circle-play' : item.kind === 'document' ? 'fa-up-right-from-square' : 'fa-camera'} text-xl opacity-80`} />
                   </div>
                 </div>
               </a>
               <div className="p-4">
-                <h3 className="text-lg font-black text-[#0f1729]">{item.title}</h3>
-                <p className="mt-1 text-sm text-slate-500">{item.meta}</p>
-                {item.url ? (
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 block break-all text-xs font-medium text-[#1d4ed8] underline decoration-[#f5c518] decoration-2 underline-offset-4"
-                  >
-                    Abrir arquivo
-                  </a>
-                ) : (
-                  <p className="mt-2 text-xs font-medium text-slate-400">Sem link disponivel</p>
-                )}
+                <h3 className="font-black text-[#0f1729] line-clamp-1">{item.title}</h3>
+                <p className="mt-0.5 text-xs text-slate-400 line-clamp-1">{item.meta}</p>
+                {item.url
+                  ? <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 block text-xs font-bold text-[#1d4ed8] underline decoration-[#f5c518] underline-offset-4 hover:decoration-2">Abrir arquivo</a>
+                  : <p className="mt-2 text-xs text-slate-400">Sem link disponivel</p>
+                }
               </div>
             </article>
           ))}
         </div>
 
+        {/* Upload panel */}
         <div className="space-y-4">
           <div
-            className={`rounded-2xl border-2 border-dashed bg-white p-5 shadow-sm transition ${
-              dropActive ? 'border-[#f5c518] bg-[#fff9db]' : 'border-slate-200'
-            }`}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setDropActive(true);
-            }}
+            className={`rounded-2xl border-2 border-dashed bg-white p-5 shadow-sm transition-all duration-200 ${dropActive ? 'border-[#f5c518] bg-[#fffef3] scale-[1.01]' : 'border-slate-200'}`}
+            onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
             onDragLeave={() => setDropActive(false)}
-            onDrop={handleDrop}
+            onDrop={onDrop}
           >
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Upload rapido</p>
-            <button
-              type="button"
-              onClick={openPicker}
-              className="mt-4 flex w-full flex-col items-center justify-center rounded-3xl border border-slate-200 bg-slate-50 p-8 text-center transition hover:border-[#f5c518] hover:bg-[#fffdf1]"
-            >
-              <i className="fa-solid fa-cloud-arrow-up text-4xl text-[#f5c518]" />
-              <p className="mt-4 text-lg font-black text-[#0f1729]">Arraste a imagem, video ou documento aqui</p>
-              <p className="mt-2 text-sm text-slate-500">Depois vamos perguntar a obra e o RDO relacionados.</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Upload rapido</p>
+            <button type="button" onClick={openPick} className="mt-3 flex w-full flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center transition-all duration-150 hover:border-[#f5c518] hover:bg-[#fffef7] active:scale-[0.98]">
+              <i className={`fa-solid fa-cloud-arrow-up text-4xl transition-all duration-200 ${dropActive ? 'text-[#f5c518] scale-110' : 'text-slate-300'}`} />
+              <p className="mt-3 text-base font-black text-[#0f1729]">Arraste aqui</p>
+              <p className="mt-1 text-xs text-slate-400">Imagem, video ou documento</p>
             </button>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.dwg"
-              onChange={(event) => handleFile(event.target.files?.[0])}
-            />
+            <input ref={fileInputRef} type="file" className="hidden" accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.dwg" onChange={(e) => onFile(e.target.files?.[0])} />
 
             {pendingFile && (
-              <form onSubmit={handleSubmit} className="mt-5 space-y-4 rounded-3xl border border-slate-200 bg-white p-4">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400">Arquivo selecionado</p>
-                  <p className="mt-2 text-sm font-semibold text-[#0f1729]">{pendingFile.name}</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {pendingFile.type || 'tipo desconhecido'} • {(pendingFile.size / 1024 / 1024).toFixed(2)} MB
-                  </p>
+              <form onSubmit={handleSubmit} className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 animate-in fade-in duration-200">
+                <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Arquivo selecionado</p>
+                  <p className="mt-1 text-sm font-bold text-[#0f1729] truncate">{pendingFile.name}</p>
+                  <p className="text-xs text-slate-400">{pendingFile.type || '—'} · {(pendingFile.size / 1024 / 1024).toFixed(2)} MB</p>
                 </div>
-
-                <div className="grid gap-3">
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Obra</span>
-                    <select
-                      value={obraId}
-                      onChange={(event) => setObraId(event.target.value)}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-[#0f1729]"
-                      required
-                    >
-                      <option value="">Selecione a obra</option>
-                      {obras.map((obra) => (
-                        <option key={obra.id} value={obra.id}>
-                          {obra.nome}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="grid gap-2">
-                    <span className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">RDO</span>
-                    <select
-                      value={rdoId}
-                      onChange={(event) => setRdoId(event.target.value)}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-[#0f1729]"
-                      required
-                    >
-                      <option value="">Selecione o RDO</option>
-                      {rdos.map((rdo) => (
-                        <option key={rdo.id} value={rdo.id}>
-                          {rdo.id} • {rdo.obra}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                {feedback && (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    {feedback}
-                  </div>
-                )}
-
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={resetUpload}
-                    className="flex-1 rounded-xl border border-slate-200 px-4 py-3 text-xs font-black uppercase tracking-[0.24em] text-slate-600 transition hover:bg-slate-50"
-                    disabled={submitting}
-                  >
-                    Limpar
-                  </button>
-                  <button
-                    type="submit"
-                    className="flex-1 rounded-xl bg-[#0f1729] px-4 py-3 text-xs font-black uppercase tracking-[0.24em] text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={submitting}
-                  >
-                    {submitting ? 'Enviando...' : 'Enviar para API'}
-                  </button>
+                <label className="grid gap-1.5">
+                  <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Obra</span>
+                  <select value={obraId} onChange={(e) => setObraId(e.target.value)} className={inputCls} required>
+                    <option value="">Selecione a obra</option>
+                    {obras.map((o) => <option key={o.id} value={o.id}>{o.nome}</option>)}
+                  </select>
+                </label>
+                <label className="grid gap-1.5">
+                  <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">RDO</span>
+                  <select value={rdoId} onChange={(e) => setRdoId(e.target.value)} className={inputCls} required>
+                    <option value="">Selecione o RDO</option>
+                    {rdos.map((r) => <option key={r.id} value={r.id}>{r.id} • {r.obra}</option>)}
+                  </select>
+                </label>
+                {feedback && <p className="rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-600">{feedback}</p>}
+                <div className="flex gap-2">
+                  <Btn variant="outline" onClick={reset} disabled={submitting} className="flex-1">Limpar</Btn>
+                  <Btn type="submit" variant="dark" disabled={submitting} className="flex-1">{submitting ? 'Enviando...' : 'Enviar para API'}</Btn>
                 </div>
               </form>
             )}
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Indicadores</p>
-            <div className="mt-4 space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Indicadores</p>
+            <div className="mt-4 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Arquivos recebidos</span>
-                <strong className="text-lg">{midias.length}</strong>
+                <span className="text-sm text-white/70">Arquivos recebidos</span>
+                <strong className="text-xl font-black">{midias.length}</strong>
               </div>
-              <div className="h-2 rounded-full bg-white/10">
-                <div className="h-2 w-[68%] rounded-full bg-gradient-to-r from-[#f5c518] to-[#d8a800]" />
+              <div className="h-1.5 rounded-full bg-white/10">
+                <div className="h-1.5 rounded-full bg-gradient-to-r from-[#f5c518] to-[#d4a017]" style={{ width: '68%' }} />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Origem API</span>
-                <strong className="text-lg">PHP</strong>
+                <span className="text-sm text-white/70">Origem</span>
+                <strong className="text-sm font-black text-white/80">API PHP</strong>
               </div>
             </div>
           </div>
@@ -1593,128 +1004,82 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
   );
 }
 
-void MidiasScreen;
-
+// ─────────────────────────────────────────────
+// TELA: GRÁFICOS
+// ─────────────────────────────────────────────
 function GraficosScreen({ obras, rdos, midias, loading, error }) {
-  const ranking = buildRdoRanking(obras, rdos);
-  const mediaDistribution = buildMediaDistribution(midias);
-  const totalRdos = rdos.length;
-  const totalObras = obras.length;
-  const topObra = ranking[0];
-  const pieData = mediaDistribution.map((item) => ({
-    name: item.name,
-    value: item.count,
-  }));
+  const ranking   = buildRdoRanking(obras, rdos);
+  const mediaDist = buildMediaDistribution(midias);
+  const topObra   = ranking[0];
+  const pieData   = mediaDist.map((i) => ({ name: i.name, value: i.count }));
 
   return (
     <PageShell
       title="Graficos"
       subtitle="RDO e midias por obra"
-      action={
-        <button className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-[#0f1729] transition hover:border-[#f5c518] hover:text-[#9a7a00]">
-          Atualizar dados
-        </button>
-      }
+      action={<Btn variant="outline"><i className="fa-solid fa-arrows-rotate text-xs" />Atualizar dados</Btn>}
     >
-      <div className="grid gap-4 lg:grid-cols-3">
-        <StatCard label="Total de obras" value={String(totalObras).padStart(2, '0')} hint="Base vinda da API" tone="amber" />
-        <StatCard label="Total de RDOs" value={String(totalRdos).padStart(2, '0')} hint="Todos os registros" tone="emerald" />
-        <StatCard label="Top obra" value={topObra ? String(topObra.count) : '00'} hint={topObra ? topObra.name : 'Sem dados'} tone="red" />
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard label="Total de obras" value={String(obras.length).padStart(2,'0')} hint="Base API"          tone="amber" />
+        <StatCard label="Total de RDOs"  value={String(rdos.length).padStart(2,'0')}  hint="Todos registros"   tone="emerald" />
+        <StatCard label="Top obra"       value={topObra ? String(topObra.count) : '00'} hint={topObra?.name || 'Sem dados'} tone="red" />
       </div>
 
-      {error && (
-        <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-          {error}
-        </div>
-      )}
+      {error   && <ErrorBanner message={error} className="mt-4" />}
+      {loading && <LoadingRow label="Carregando graficos da API..." className="mt-6" />}
+      {!loading && ranking.length === 0 && !error && <EmptyRow label="Nenhum RDO encontrado para montar o grafico." className="mt-6" />}
 
-      {loading && (
-        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm">
-          Carregando graficos da API...
-        </div>
-      )}
-
-      {!loading && ranking.length === 0 && !error && (
-        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm">
-          Nenhum RDO encontrado para montar o grafico.
-        </div>
-      )}
-
-      <div className="mt-6 grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
+      <div className="mt-5 grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
+        {/* Bar chart */}
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Bar chart</p>
-              <h2 className="mt-2 text-2xl font-black text-[#0f1729]">Obras com mais RDO</h2>
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Ranking de RDOs</p>
+              <h2 className="mt-1 text-2xl font-black text-[#0f1729]">Obras com mais registros</h2>
             </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">
-              Top {ranking.length}
-            </span>
+            <Badge>Top {ranking.length}</Badge>
           </div>
-
-          <div className="mt-6 h-[360px] w-full">
+          <div className="mt-5 h-[340px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={ranking} margin={{ top: 10, right: 20, left: 0, bottom: 60 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis
-                  dataKey="name"
-                  angle={-25}
-                  textAnchor="end"
-                  interval={0}
-                  height={80}
-                  tick={{ fill: '#64748b', fontSize: 12 }}
-                />
-                <YAxis allowDecimals={false} tick={{ fill: '#64748b', fontSize: 12 }} />
-                <Tooltip
-                  cursor={{ fill: 'rgba(245, 197, 24, 0.08)' }}
-                  contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0' }}
-                  formatter={(value) => [`${value} RDOs`, 'Quantidade']}
-                />
-                <Legend />
-                <Bar dataKey="count" name="RDOs" radius={[10, 10, 0, 0]}>
-                  {ranking.map((entry, index) => (
-                    <Cell key={`cell-${entry.name}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                  ))}
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="name" angle={-25} textAnchor="end" interval={0} height={80} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                <YAxis allowDecimals={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                <Tooltip cursor={{ fill: 'rgba(245,197,24,0.07)' }} contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', fontSize: 12 }} formatter={(v) => [`${v} RDOs`, 'Quantidade']} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="count" name="RDOs" radius={[8,8,0,0]}>
+                  {ranking.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
+        {/* Pie + ranking */}
         <div className="space-y-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Distribuicao de midias</p>
-            <div className="mt-4 h-[260px]">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Distribuicao de midias</p>
+            <div className="mt-3 h-[240px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={70} outerRadius={95} paddingAngle={4}>
-                    {pieData.map((entry, index) => (
-                      <Cell key={`pie-${entry.name}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                    ))}
+                  <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={65} outerRadius={90} paddingAngle={4}>
+                    {pieData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
-                  <Tooltip
-                    contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0' }}
-                    formatter={(value) => [`${value} arquivos`, 'Quantidade']}
-                  />
+                  <Tooltip contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', fontSize: 12 }} formatter={(v) => [`${v} arquivos`, 'Quantidade']} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Ranking de midias</p>
-            <div className="mt-4 space-y-3">
-              {mediaDistribution.map((item, index) => (
-                <div key={item.name} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-                  <span
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-xs font-black text-[#0f1729]"
-                    style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
-                  >
-                    {index + 1}
-                  </span>
+          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Ranking de midias</p>
+            <div className="mt-3 space-y-2">
+              {mediaDist.map((item, i) => (
+                <div key={item.name} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-black text-[#0f1729]" style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}>{i + 1}</span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold">{item.name}</p>
-                    <p className="text-xs text-white/60">{item.count} arquivos</p>
+                    <p className="truncate text-sm font-semibold text-white">{item.name}</p>
+                    <p className="text-[11px] text-white/50">{item.count} arquivos</p>
                   </div>
                 </div>
               ))}
@@ -1726,274 +1091,186 @@ function GraficosScreen({ obras, rdos, midias, loading, error }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// TELA: MAPA
+// ─────────────────────────────────────────────
 function MapaScreen({ midias, aprovacoes, loading, error }) {
   const { mediaPoints, approvalPoints, allPoints } = buildMapPoints(midias, aprovacoes);
   const mapCenter = allPoints.length
-    ? [
-        allPoints.reduce((sum, point) => sum + point.latitude, 0) / allPoints.length,
-        allPoints.reduce((sum, point) => sum + point.longitude, 0) / allPoints.length,
-      ]
+    ? [allPoints.reduce((s, p) => s + p.latitude, 0) / allPoints.length, allPoints.reduce((s, p) => s + p.longitude, 0) / allPoints.length]
     : [-8.31, -34.96];
-
-  const mapBounds = allPoints.length ? allPoints.map((point) => [point.latitude, point.longitude]) : null;
-
-  const mapZoom = allPoints.length ? 10 : 8;
+  const mapBounds   = allPoints.length ? allPoints.map((p) => [p.latitude, p.longitude]) : null;
   const centerLabel = allPoints.length ? `${allPoints.length} pontos georreferenciados` : 'Sem coordenadas enviadas';
 
   return (
     <PageShell
       title="Mapa"
       subtitle="Localizacao geografica"
-      action={
-        <button className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-[#0f1729] transition hover:border-[#f5c518] hover:text-[#9a7a00]">
-          Atualizar mapa
-        </button>
-      }
+      action={<Btn variant="outline"><i className="fa-solid fa-location-crosshairs text-xs" />Atualizar mapa</Btn>}
     >
-      <div className="grid gap-4 xl:grid-cols-[1.45fr_0.85fr]">
-        <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="grid gap-5 xl:grid-cols-[1.5fr_0.8fr]">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Mapa interativo</p>
-              <h2 className="mt-2 text-2xl font-black text-[#0f1729]">Midias e aprovacoes no territorio</h2>
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Mapa interativo</p>
+              <h2 className="mt-1 text-xl font-black text-[#0f1729]">Midias e aprovacoes no territorio</h2>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
-              <span className="rounded-full border border-[#f5c518]/30 bg-[#f5c518]/10 px-3 py-1 text-[#9a7a00]">Midias: {mediaPoints.length}</span>
-              <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sky-700">Aprovacoes: {approvalPoints.length}</span>
+            <div className="flex gap-2">
+              <Badge tone="amber">Midias: {mediaPoints.length}</Badge>
+              <Badge tone="sky">Aprovacoes: {approvalPoints.length}</Badge>
             </div>
           </div>
 
-          {error && (
-            <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-              {error}
-            </div>
-          )}
+          {error   && <ErrorBanner message={error} className="mb-4" />}
+          {loading && <LoadingRow label="Carregando pontos geograficos..." className="mb-4" />}
 
-          {loading && (
-            <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
-              Carregando pontos geograficos...
-            </div>
-          )}
-
-          <div className="relative h-[620px] overflow-hidden rounded-[28px] border border-slate-200">
-            <MapContainer
-              center={mapCenter}
-              zoom={mapZoom}
-              scrollWheelZoom
-              className="h-full w-full"
-              whenReady={(map) => {
-                if (mapBounds) {
-                  map.target.fitBounds(mapBounds, { padding: [40, 40] });
-                }
-              }}
-            >
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-
-              {mediaPoints.map((point) => (
-                <CircleMarker
-                  key={point.id}
-                  center={[point.latitude, point.longitude]}
-                  pathOptions={{ color: '#f5c518', fillColor: '#f5c518', fillOpacity: 0.9, weight: 2 }}
-                  radius={10}
-                >
-                  <Popup>
-                    <div className="min-w-[160px]">
-                      <p className="text-sm font-black text-[#0f1729]">{point.label}</p>
-                      <p className="text-xs text-slate-500">{point.sublabel}</p>
-                      <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.24em] text-[#9a7a00]">Midia</p>
-                    </div>
-                  </Popup>
+          <div className="relative h-[580px] overflow-hidden rounded-2xl border border-slate-200">
+            <MapContainer center={mapCenter} zoom={allPoints.length ? 10 : 8} scrollWheelZoom className="h-full w-full" whenReady={(map) => { if (mapBounds) map.target.fitBounds(mapBounds, { padding: [40, 40] }); }}>
+              <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              {mediaPoints.map((p) => (
+                <CircleMarker key={p.id} center={[p.latitude, p.longitude]} pathOptions={{ color: '#f5c518', fillColor: '#f5c518', fillOpacity: 0.9, weight: 2 }} radius={10}>
+                  <Popup><div className="min-w-[140px]"><p className="font-black text-[#0f1729]">{p.label}</p><p className="text-xs text-slate-500">{p.sublabel}</p><Badge tone="amber" className="mt-2">Midia</Badge></div></Popup>
                 </CircleMarker>
               ))}
-
-              {approvalPoints.map((point) => (
-                <CircleMarker
-                  key={point.id}
-                  center={[point.latitude, point.longitude]}
-                  pathOptions={{ color: '#0ea5e9', fillColor: '#0ea5e9', fillOpacity: 0.9, weight: 2 }}
-                  radius={10}
-                >
-                  <Popup>
-                    <div className="min-w-[160px]">
-                      <p className="text-sm font-black text-[#0f1729]">{point.label}</p>
-                      <p className="text-xs text-slate-500">{point.sublabel}</p>
-                      <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.24em] text-sky-700">Aprovacao</p>
-                    </div>
-                  </Popup>
+              {approvalPoints.map((p) => (
+                <CircleMarker key={p.id} center={[p.latitude, p.longitude]} pathOptions={{ color: '#0ea5e9', fillColor: '#0ea5e9', fillOpacity: 0.9, weight: 2 }} radius={10}>
+                  <Popup><div className="min-w-[140px]"><p className="font-black text-[#0f1729]">{p.label}</p><p className="text-xs text-slate-500">{p.sublabel}</p><Badge tone="sky" className="mt-2">Aprovacao</Badge></div></Popup>
                 </CircleMarker>
               ))}
             </MapContainer>
 
-            <div className="pointer-events-none absolute left-4 top-4 z-[401] rounded-full border border-white/20 bg-[#0f1729]/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.35em] text-white/80 backdrop-blur">
+            <div className="pointer-events-none absolute left-3 top-3 z-[401] rounded-full border border-white/20 bg-[#0f1729]/80 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-white/80 backdrop-blur">
               {centerLabel}
             </div>
 
             {!allPoints.length && (
-              <div className="absolute inset-0 z-[400] flex items-center justify-center bg-slate-950/35 p-6 text-center">
-                <div className="max-w-md rounded-3xl border border-white/20 bg-white/90 p-6 text-[#0f1729] shadow-xl backdrop-blur">
-                  <p className="text-sm font-black uppercase tracking-[0.3em] text-slate-400">Mapa vazio</p>
-                  <p className="mt-3 text-lg font-bold">
-                    Nenhuma midia ou aprovacao trouxe latitude e longitude para desenhar no mapa.
-                  </p>
+              <div className="absolute inset-0 z-[400] flex items-center justify-center bg-slate-950/30 backdrop-blur-sm">
+                <div className="max-w-sm rounded-2xl border border-white/20 bg-white/90 p-6 text-center shadow-xl">
+                  <i className="fa-solid fa-map text-4xl text-slate-300" />
+                  <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Mapa vazio</p>
+                  <p className="mt-2 text-sm font-bold text-[#0f1729]">Nenhuma midia ou aprovacao trouxe coordenadas para o mapa.</p>
                 </div>
               </div>
             )}
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Legenda</p>
-            <div className="mt-4 space-y-3">
-              <div className="flex items-center gap-3 rounded-2xl border border-slate-100 px-4 py-3">
-                <span className="h-4 w-4 rounded-full bg-[#f5c518] ring-4 ring-[#f5c518]/25" />
-                <div>
-                  <p className="text-sm font-semibold text-[#0f1729]">Arquivos de midia</p>
-                  <p className="text-xs text-slate-500">Marcadores amarelos</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 rounded-2xl border border-slate-100 px-4 py-3">
-                <span className="h-4 w-4 rounded-full bg-sky-500 ring-4 ring-sky-300/30" />
-                <div>
-                  <p className="text-sm font-semibold text-[#0f1729]">Aprovacoes</p>
-                  <p className="text-xs text-slate-500">Marcadores azuis</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-3xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Resumo</p>
-            <div className="mt-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Pontos de midia</span>
-                <strong className="text-lg">{mediaPoints.length}</strong>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Pontos de aprovacao</span>
-                <strong className="text-lg">{approvalPoints.length}</strong>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white/80">Total no mapa</span>
-                <strong className="text-lg">{allPoints.length}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Ultimos pontos</p>
-            <div className="mt-4 space-y-3">
-              {[...mediaPoints.slice(0, 3), ...approvalPoints.slice(0, 3)].map((point) => (
-                <div key={point.id} className="rounded-2xl border border-slate-100 px-4 py-3">
-                  <p className="text-sm font-bold text-[#0f1729]">{point.label}</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {point.kind === 'media' ? 'Midia' : 'Aprovacao'} • {point.latitude.toFixed(4)}, {point.longitude.toFixed(4)}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </PageShell>
-  );
-}
-
-function LogErrosScreen({ requestLogs }) {
-  return (
-    <PageShell
-      title="Log de erros"
-      subtitle="Saude da aplicacao"
-      action={
-        <button className="rounded-xl border border-rose-200 bg-white px-5 py-3 text-xs font-black uppercase tracking-[0.24em] text-rose-600 transition hover:bg-rose-50">
-          Exportar log
-        </button>
-      }
-    >
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Eventos recentes</p>
-              <h2 className="mt-2 text-2xl font-black text-[#0f1729]">Chamadas da API</h2>
-            </div>
-            <span className="rounded-full bg-rose-50 px-3 py-1 text-xs font-black uppercase tracking-[0.24em] text-rose-600">
-              {requestLogs.filter((log) => log.level === 'Critico').length} erro(s)
-            </span>
-          </div>
-
-          <div className="mt-5 space-y-3">
-            {requestLogs.length === 0 && (
-              <div className="rounded-2xl border border-slate-100 p-4 text-sm text-slate-500">
-                Nenhum evento de API registrado ainda.
-              </div>
-            )}
-
-            {requestLogs.map((item) => {
-              const tone =
-                item.level === 'Critico'
-                  ? 'border-rose-100 bg-rose-50 text-rose-600'
-                  : item.level === 'Alerta'
-                    ? 'border-amber-100 bg-amber-50 text-amber-700'
-                    : 'border-emerald-100 bg-emerald-50 text-emerald-600';
-
-              return (
-                <div key={item.id} className="rounded-2xl border border-slate-100 p-4">
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-sm border border-slate-100 bg-slate-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">
-                          {item.id}
-                        </span>
-                        <span className={`rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.24em] ${tone}`}>
-                          {item.level}
-                        </span>
-                      </div>
-                      <h3 className="mt-3 text-lg font-black text-[#0f1729]">{item.message}</h3>
-                      <p className="mt-1 text-sm text-slate-500">Origem: {item.origin}</p>
-                    </div>
-                    <span className="text-sm font-bold text-slate-400">{item.time}</span>
-                  </div>
-                </div>
-              );
-            })}
           </div>
         </div>
 
         <div className="space-y-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Status geral</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <StatCard
-                label="Criticos"
-                value={String(requestLogs.filter((log) => log.level === 'Critico').length).padStart(2, '0')}
-                hint="Falhas na integracao"
-                tone="red"
-              />
-              <StatCard
-                label="Infos"
-                value={String(requestLogs.filter((log) => log.level === 'Info').length).padStart(2, '0')}
-                hint="Chamadas bem sucedidas"
-                tone="emerald"
-              />
-              <StatCard
-                label="Alertas"
-                value={String(requestLogs.filter((log) => log.level === 'Alerta').length).padStart(2, '0')}
-                hint="Ocorrencias intermediarias"
-                tone="amber"
-              />
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Legenda</p>
+            <div className="mt-4 space-y-2.5">
+              {[['bg-[#f5c518] ring-[#f5c518]/25', 'Arquivos de midia', 'Marcadores amarelos'], ['bg-sky-500 ring-sky-300/30', 'Aprovacoes', 'Marcadores azuis']].map(([cls, label, sub]) => (
+                <div key={label} className="flex items-center gap-3 rounded-xl border border-slate-100 px-4 py-3">
+                  <span className={`h-3.5 w-3.5 shrink-0 rounded-full ring-4 ${cls}`} />
+                  <div>
+                    <p className="text-sm font-bold text-[#0f1729]">{label}</p>
+                    <p className="text-xs text-slate-400">{sub}</p>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 text-white shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-white/45">Acoes recomendadas</p>
-            <div className="mt-4 space-y-3 text-sm">
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Reprocessar chamadas com erro</div>
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Validar disponibilidade do endpoint</div>
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Revisar dados retornados pelo PHP</div>
+          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Resumo</p>
+            <div className="mt-4 space-y-3 divide-y divide-white/10">
+              {[['Pontos de midia', mediaPoints.length], ['Pontos de aprovacao', approvalPoints.length], ['Total no mapa', allPoints.length]].map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between pt-3 first:pt-0">
+                  <span className="text-sm text-white/60">{k}</span>
+                  <strong className="text-lg font-black text-white">{v}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {allPoints.length > 0 && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Ultimos pontos</p>
+              <div className="mt-3 space-y-2">
+                {[...mediaPoints.slice(0, 3), ...approvalPoints.slice(0, 3)].map((p) => (
+                  <div key={p.id} className="rounded-xl border border-slate-100 px-4 py-2.5">
+                    <p className="truncate text-sm font-bold text-[#0f1729]">{p.label}</p>
+                    <p className="mt-0.5 text-[11px] text-slate-400">{p.kind === 'media' ? 'Midia' : 'Aprovacao'} · {p.latitude.toFixed(4)}, {p.longitude.toFixed(4)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </PageShell>
+  );
+}
+
+// ─────────────────────────────────────────────
+// TELA: LOG DE ERROS
+// ─────────────────────────────────────────────
+function LogErrosScreen({ requestLogs }) {
+  const critCount  = requestLogs.filter((l) => l.level === 'Critico').length;
+  const infoCount  = requestLogs.filter((l) => l.level === 'Info').length;
+  const alertCount = requestLogs.filter((l) => l.level === 'Alerta').length;
+
+  const toneCls = (level) =>
+    level === 'Critico' ? 'border-rose-100 bg-rose-50 text-rose-600' :
+    level === 'Alerta'  ? 'border-amber-100 bg-amber-50 text-amber-700' :
+                          'border-emerald-100 bg-emerald-50 text-emerald-700';
+
+  return (
+    <PageShell
+      title="Log de erros"
+      subtitle="Saude da aplicacao"
+      action={<Btn variant="danger"><i className="fa-solid fa-file-export text-xs" />Exportar log</Btn>}
+    >
+      <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Eventos recentes</p>
+              <h2 className="mt-1 text-2xl font-black text-[#0f1729]">Chamadas da API</h2>
+            </div>
+            {critCount > 0 && <Badge tone="red">{critCount} erro(s)</Badge>}
+          </div>
+
+          {requestLogs.length === 0 && <EmptyRow label="Nenhum evento de API registrado ainda." className="mt-5" />}
+
+          <div className="mt-4 space-y-2.5">
+            {requestLogs.map((item) => (
+              <div key={item.id} className="rounded-xl border border-slate-100 p-4 transition-shadow hover:shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge>{item.id}</Badge>
+                      <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest ${toneCls(item.level)}`}>{item.level}</span>
+                    </div>
+                    <h3 className="mt-2.5 text-base font-black text-[#0f1729]">{item.message}</h3>
+                    <p className="mt-0.5 text-sm text-slate-400">Origem: {item.origin}</p>
+                  </div>
+                  <span className="shrink-0 text-sm font-bold tabular-nums text-slate-400">{item.time}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">Status geral</p>
+            <div className="mt-4 grid gap-3">
+              <StatCard label="Criticos" value={String(critCount).padStart(2,'0')}  hint="Falhas na integracao"        tone="red" />
+              <StatCard label="Infos"    value={String(infoCount).padStart(2,'0')}  hint="Chamadas bem sucedidas"      tone="emerald" />
+              <StatCard label="Alertas"  value={String(alertCount).padStart(2,'0')} hint="Ocorrencias intermediarias"  tone="amber" />
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">Acoes recomendadas</p>
+            <div className="mt-3 space-y-2">
+              {['Reprocessar chamadas com erro','Validar disponibilidade do endpoint','Revisar dados retornados pelo PHP'].map((s) => (
+                <div key={s} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
+                  <i className="fa-solid fa-chevron-right text-[10px] text-[#f5c518]" />
+                  <span className="text-sm text-white/80">{s}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -2002,27 +1279,51 @@ function LogErrosScreen({ requestLogs }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// MICRO-COMPONENTES AUXILIARES
+// ─────────────────────────────────────────────
+function ErrorBanner({ message, className = '' }) {
+  return (
+    <div className={`flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 ${className}`}>
+      <i className="fa-solid fa-triangle-exclamation mt-0.5 shrink-0" />
+      {message}
+    </div>
+  );
+}
+
+function LoadingRow({ label, className = '' }) {
+  return (
+    <div className={`flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-400 ${className}`}>
+      <i className="fa-solid fa-circle-notch fa-spin text-[#f5c518]" />
+      {label}
+    </div>
+  );
+}
+
+function EmptyRow({ label, className = '' }) {
+  return (
+    <div className={`rounded-xl border border-slate-100 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400 ${className}`}>
+      <i className="fa-solid fa-inbox mb-2 block text-2xl text-slate-200" />
+      {label}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// ROTEADOR DE TELAS
+// ─────────────────────────────────────────────
 function getScreen(activeItem, state, handlers) {
   switch (activeItem) {
-    case 'RDO':
-      return <RdoScreen rdos={state.rdos} loading={state.loading} error={state.errors.rdos} />;
-    case 'Aprovacoes':
-      return <AprovacoesScreen aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.aprovacoes} />;
-    case 'Midias':
-      return <MidiasUploadScreen midias={state.midias} loading={state.loading} error={state.errors.midias} obras={state.obras} rdos={state.rdos} onUpload={handlers.onUpload} />;
-    case 'Mapa':
-      return <MapaScreen midias={state.midias} aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.midias || state.errors.aprovacoes} />;
-    case 'Graficos':
-      return <GraficosScreen obras={state.obras} rdos={state.rdos} midias={state.midias} loading={state.loading} error={state.errors.rdos || state.errors.obras || state.errors.midias} />;
-    case 'Log de erros':
-      return <LogErrosScreen requestLogs={state.requestLogs} />;
-    case 'Obras':
-    default:
+    case 'RDO':        return <RdoScreen rdos={state.rdos} loading={state.loading} error={state.errors.rdos} />;
+    case 'Aprovacoes': return <AprovacoesScreen aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.aprovacoes} />;
+    case 'Midias':     return <MidiasUploadScreen midias={state.midias} loading={state.loading} error={state.errors.midias} obras={state.obras} rdos={state.rdos} onUpload={handlers.onUpload} />;
+    case 'Mapa':       return <MapaScreen midias={state.midias} aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.midias || state.errors.aprovacoes} />;
+    case 'Graficos':   return <GraficosScreen obras={state.obras} rdos={state.rdos} midias={state.midias} loading={state.loading} error={state.errors.rdos || state.errors.obras || state.errors.midias} />;
+    case 'Log de erros': return <LogErrosScreen requestLogs={state.requestLogs} />;
+    case 'Obras': default:
       return (
         <ObrasScreen
-          obras={state.obras}
-          loading={state.loading}
-          error={state.errors.obras}
+          obras={state.obras} loading={state.loading} error={state.errors.obras}
           expandedObra={handlers.expandedObra}
           onToggleObra={handlers.onToggleObra}
           onOpenRdo={handlers.onOpenRdo}
@@ -2033,100 +1334,52 @@ function getScreen(activeItem, state, handlers) {
   }
 }
 
+// ─────────────────────────────────────────────
+// APP — COMPONENTE RAIZ
+// ─────────────────────────────────────────────
 export default function App() {
-  const [expandedObra, setExpandedObra] = useState(null);
-  const [activeItem, setActiveItem] = useState('Obras');
-  const [workModal, setWorkModal] = useState(null);
-  const [workModalTab, setWorkModalTab] = useState('rdo');
-  const [loading, setLoading] = useState(true);
-  const [errors, setErrors] = useState({
-    obras: '',
-    rdos: '',
-    aprovacoes: '',
-    midias: '',
-  });
-  const [collections, setCollections] = useState({
-    obras: [],
-    rdos: [],
-    aprovacoes: [],
-    midias: [],
-  });
-  const [requestLogs, setRequestLogs] = useState([]);
+  const [expandedObra,   setExpandedObra]   = useState(null);
+  const [activeItem,     setActiveItem]     = useState('Obras');
+  const [workModal,      setWorkModal]      = useState(null);
+  const [workModalTab,   setWorkModalTab]   = useState('rdo');
+  const [loading,        setLoading]        = useState(true);
+  const [errors,         setErrors]         = useState({ obras: '', rdos: '', aprovacoes: '', midias: '' });
+  const [collections,    setCollections]    = useState({ obras: [], rdos: [], aprovacoes: [], midias: [] });
+  const [requestLogs,    setRequestLogs]    = useState([]);
 
-  const openWorkModal = useCallback((mode, obra) => {
-    setWorkModal({ mode, obra });
-    setWorkModalTab(mode === 'history' ? 'history' : 'rdo');
-  }, []);
+  // ── Modais ──
+  const openWorkModal  = useCallback((mode, obra) => { setWorkModal({ mode, obra }); setWorkModalTab(mode === 'history' ? 'history' : 'rdo'); }, []);
+  const closeWorkModal = useCallback(() => setWorkModal(null), []);
 
-  const closeWorkModal = useCallback(() => {
-    setWorkModal(null);
-  }, []);
-
+  // ── Carga de dados ──
   const loadAllCollections = useCallback(async () => {
     setLoading(true);
     setErrors({ obras: '', rdos: '', aprovacoes: '', midias: '' });
-
-    const resources = Object.values(RESOURCE_MAP);
-    const startedAt = new Date();
+    const resources  = Object.values(RESOURCE_MAP);
+    const startedAt  = new Date();
 
     const results = await Promise.all(
       resources.map(async (resource) => {
         try {
           const response = await axios.get(API_BASE_URL, { params: { resource } });
-          return {
-            resource,
-            status: 'fulfilled',
-            rows: normalizeCollection(response.data),
-          };
+          return { resource, status: 'fulfilled', rows: normalizeCollection(response.data) };
         } catch (error) {
-          return {
-            resource,
-            status: 'rejected',
-            error: getApiErrorMessage(error),
-          };
+          return { resource, status: 'rejected', error: getApiErrorMessage(error) };
         }
       }),
     );
 
-    const nextCollections = {
-      obras: [],
-      rdos: [],
-      aprovacoes: [],
-      midias: [],
-    };
-
-    const nextErrors = {
-      obras: '',
-      rdos: '',
-      aprovacoes: '',
-      midias: '',
-    };
+    const nextCollections = { obras: [], rdos: [], aprovacoes: [], midias: [] };
+    const nextErrors      = { obras: '', rdos: '', aprovacoes: '', midias: '' };
 
     const nextLogs = results.map((result, index) => {
-      const time = new Date(startedAt.getTime() + index * 1000).toLocaleTimeString('pt-BR', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-
+      const time = new Date(startedAt.getTime() + index * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       if (result.status === 'fulfilled') {
         nextCollections[result.resource] = result.rows;
-        return {
-          id: `${result.resource}-${index + 1}`,
-          level: 'Info',
-          origin: result.resource.toUpperCase(),
-          message: `${result.rows.length} registros carregados com sucesso.`,
-          time,
-        };
+        return { id: `${result.resource}-${index + 1}`, level: 'Info',    origin: result.resource.toUpperCase(), message: `${result.rows.length} registros carregados com sucesso.`, time };
       }
-
       nextErrors[result.resource] = result.error;
-      return {
-        id: `${result.resource}-${index + 1}`,
-        level: 'Critico',
-        origin: result.resource.toUpperCase(),
-        message: `Falha ao carregar ${resourceLabel(result.resource)}: ${result.error}`,
-        time,
-      };
+      return { id: `${result.resource}-${index + 1}`, level: 'Critico', origin: result.resource.toUpperCase(), message: `Falha ao carregar ${resourceLabel(result.resource)}: ${result.error}`, time };
     });
 
     setCollections(nextCollections);
@@ -2135,147 +1388,70 @@ export default function App() {
     setLoading(false);
   }, []);
 
-  const refreshData = useCallback(async () => {
-    await loadAllCollections();
-  }, [loadAllCollections]);
+  const refreshData = useCallback(() => loadAllCollections(), [loadAllCollections]);
 
+  useEffect(() => { const t = window.setTimeout(() => void loadAllCollections(), 0); return () => window.clearTimeout(t); }, [loadAllCollections]);
+
+  // ── Handlers de API ──
   const handleMediaUpload = useCallback(async ({ file, obraId, rdoId }) => {
     const formData = new FormData();
     formData.append('arquivo', file);
     formData.append('descricao', file.name);
-
-    if (obraId) {
-      formData.append('obra_id', obraId);
-    }
-
-    if (rdoId) {
-      formData.append('rdo_id', rdoId);
-    }
-
-    const mimeType = file.type?.toLowerCase() || '';
-    let tipo = 'DOCUMENTO';
-    if (mimeType.startsWith('image/')) tipo = 'IMAGEM';
-    else if (mimeType.startsWith('video/')) tipo = 'VIDEO';
-
-    formData.append('tipo', tipo);
-
-    await axios.post(UPLOAD_BASE_URL, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
+    if (obraId) formData.append('obra_id', obraId);
+    if (rdoId)  formData.append('rdo_id', rdoId);
+    const mime = file.type?.toLowerCase() || '';
+    formData.append('tipo', mime.startsWith('image/') ? 'IMAGEM' : mime.startsWith('video/') ? 'VIDEO' : 'DOCUMENTO');
+    await axios.post(UPLOAD_BASE_URL, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
     await refreshData();
   }, [refreshData]);
 
-  const handleCreateRdo = useCallback(async (payload) => {
-    await axios.post(API_BASE_URL, payload, { params: { resource: 'rdos' } });
-    await refreshData();
-  }, [refreshData]);
+  const handleCreateRdo      = useCallback(async (payload) => { await axios.post(API_BASE_URL, payload, { params: { resource: 'rdos' } }); await refreshData(); }, [refreshData]);
+  const handleCreateApproval = useCallback(async (payload) => { await axios.post(API_BASE_URL, payload, { params: { resource: 'aprovacoes' } }); await refreshData(); }, [refreshData]);
+  const handleUpdateObra     = useCallback(async (id, payload) => { await axios.put(API_BASE_URL, payload, { params: { resource: 'obras', id } }); await refreshData(); }, [refreshData]);
+  const openMapFromHistory   = useCallback(() => { setActiveItem('Mapa'); closeWorkModal(); }, [closeWorkModal]);
 
-  const handleCreateApproval = useCallback(async (payload) => {
-    await axios.post(API_BASE_URL, payload, { params: { resource: 'aprovacoes' } });
-    await refreshData();
-  }, [refreshData]);
-
-  const handleUpdateObra = useCallback(async (obraId, payload) => {
-    await axios.put(API_BASE_URL, payload, { params: { resource: 'obras', id: obraId } });
-    await refreshData();
-  }, [refreshData]);
-
-  const openMapFromHistory = useCallback(() => {
-    setActiveItem('Mapa');
-    closeWorkModal();
-  }, [closeWorkModal]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadAllCollections();
-    }, 0);
-
-    return () => window.clearTimeout(timer);
-  }, [loadAllCollections]);
-
+  // ── Normalização ──
   const obras = collections.obras.map(normalizeObra);
-  const rdos = collections.rdos.map(normalizeRdo);
+  const rdos  = collections.rdos.map(normalizeRdo);
+
   const aprovacoes = collections.aprovacoes.map((item, index) => {
-    const approval = normalizeApproval(item, index);
-    const obraId = pick(item.obra_id, item.obraId, item.obra, item.empreendimento_id);
-    const obraNome = pick(item.obra_nome, item.obra, item.nome_obra, item.empreendimento, item.titulo);
-    const latitude = toCoordinate(pick(item.latitude, item.lat, item.gps_latitude, item.gpsLatitude));
-    const longitude = toCoordinate(pick(item.longitude, item.lng, item.lon, item.gps_longitude, item.gpsLongitude));
-
+    const base = normalizeApproval(item, index);
     return {
-      ...approval,
-      obraId,
-      obra: toText(obraNome, obraId ? `Obra ${obraId}` : 'Sem obra'),
-      latitude,
-      longitude,
+      ...base,
+      obraId:    pick(item.obra_id, item.obraId, item.obra, item.empreendimento_id),
+      obra:      toText(pick(item.obra_nome, item.obra, item.nome_obra, item.empreendimento, item.titulo), `Obra ${pick(item.obra_id, '-')}`),
+      latitude:  toCoordinate(pick(item.latitude, item.lat, item.gps_latitude, item.gpsLatitude)),
+      longitude: toCoordinate(pick(item.longitude, item.lng, item.lon, item.gps_longitude, item.gpsLongitude)),
     };
   });
+
   const midias = collections.midias.map((item, index) => {
-    const media = normalizeMedia(item, index);
-    const obraId = pick(item.obra_id, item.obraId, item.obra, item.empreendimento_id);
-    const obraNome = pick(item.obra_nome, item.obra, item.nome_obra, item.empreendimento, item.titulo);
-    const latitude = toCoordinate(pick(item.latitude, item.lat, item.gps_latitude, item.gpsLatitude));
-    const longitude = toCoordinate(pick(item.longitude, item.lng, item.lon, item.gps_longitude, item.gpsLongitude));
-
+    const base = normalizeMedia(item, index);
     return {
-      ...media,
-      obraId,
-      obra: toText(obraNome, obraId ? `Obra ${obraId}` : 'Sem obra'),
-      latitude,
-      longitude,
+      ...base,
+      obraId:    pick(item.obra_id, item.obraId, item.obra, item.empreendimento_id),
+      obra:      toText(pick(item.obra_nome, item.obra, item.nome_obra, item.empreendimento, item.titulo), `Obra ${pick(item.obra_id, '-')}`),
+      latitude:  toCoordinate(pick(item.latitude, item.lat, item.gps_latitude, item.gpsLatitude)),
+      longitude: toCoordinate(pick(item.longitude, item.lng, item.lon, item.gps_longitude, item.gpsLongitude)),
     };
   });
 
+  // ── Navegação da Suly ──
   const navigateFromAssistant = useCallback((action) => {
     if (!action) return;
-
-    if (action.kind === 'screen' && action.screen) {
-      setActiveItem(action.screen);
-      return;
-    }
-
-    if (action.kind === 'media') {
-      if (action.screen) {
-        setActiveItem(action.screen);
-      }
-      if (action.url) {
-        window.open(action.url, '_blank', 'noopener,noreferrer');
-      }
-      return;
-    }
-
-    if (action.kind === 'obra') {
-      setActiveItem('Obras');
-      if (action.obraId) {
-        setExpandedObra(action.obraId);
-      }
-      return;
-    }
-
-    const selectedObra = obras.find((item) => String(item.id) === String(action.obraId));
-
-    if (action.kind === 'obra-rdo' && selectedObra) {
-      setActiveItem('Obras');
-      setExpandedObra(selectedObra.id);
-      openWorkModal('rdo', selectedObra);
-      return;
-    }
-
-    if (action.kind === 'obra-history' && selectedObra) {
-      setActiveItem('Obras');
-      setExpandedObra(selectedObra.id);
-      openWorkModal('history', selectedObra);
-    }
+    if (action.kind === 'screen' && action.screen) { setActiveItem(action.screen); return; }
+    if (action.kind === 'media') { if (action.screen) setActiveItem(action.screen); if (action.url) window.open(action.url, '_blank', 'noopener,noreferrer'); return; }
+    if (action.kind === 'obra') { setActiveItem('Obras'); if (action.obraId) setExpandedObra(action.obraId); return; }
+    const selected = obras.find((o) => String(o.id) === String(action.obraId));
+    if (action.kind === 'obra-rdo'     && selected) { setActiveItem('Obras'); setExpandedObra(selected.id); openWorkModal('rdo',     selected); return; }
+    if (action.kind === 'obra-history' && selected) { setActiveItem('Obras'); setExpandedObra(selected.id); openWorkModal('history', selected); }
   }, [obras, openWorkModal]);
 
-  const toggleObra = (id) => {
-    setExpandedObra((current) => (current === id ? null : id));
-  };
+  const toggleObra = (id) => setExpandedObra((cur) => (cur === id ? null : id));
 
+  // ─────────────────────────────────────
   return (
-    <div className="flex min-h-screen w-full overflow-hidden bg-[#eef3f8] text-left text-[#334155]">
+    <div className="flex h-screen w-full overflow-hidden bg-[#f0f4f8] text-left text-[#334155]">
       <Sidebar activeItem={activeItem} onSelectItem={setActiveItem} />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -2285,43 +1461,37 @@ export default function App() {
           {
             expandedObra,
             onToggleObra: toggleObra,
-            onUpload: handleMediaUpload,
-            onOpenRdo: (obra) => openWorkModal('rdo', obra),
-            onOpenEdit: (obra) => openWorkModal('edit', obra),
-            onOpenHistory: (obra) => openWorkModal('history', obra),
+            onUpload:     handleMediaUpload,
+            onOpenRdo:    (obra) => openWorkModal('rdo',     obra),
+            onOpenEdit:   (obra) => openWorkModal('edit',    obra),
+            onOpenHistory:(obra) => openWorkModal('history', obra),
           },
         )}
       </main>
 
       <FloatingAssistant
         activeItem={activeItem}
-        obras={obras}
-        rdos={rdos}
-        midias={midias}
-        aprovacoes={aprovacoes}
+        obras={obras} rdos={rdos} midias={midias} aprovacoes={aprovacoes}
         onNavigate={navigateFromAssistant}
       />
 
-      {workModal?.obra &&
-        createPortal(
-          <ObraModal
-            key={`${workModal.mode}-${workModal.obra.id}`}
-            mode={workModal.mode}
-            tab={workModalTab}
-            obra={workModal.obra}
-            rdos={rdos}
-            midias={midias}
-            aprovacoes={aprovacoes}
-            onClose={closeWorkModal}
-            onSetTab={setWorkModalTab}
-            onCreateRdo={handleCreateRdo}
-            onCreateMedia={handleMediaUpload}
-            onCreateApproval={handleCreateApproval}
-            onUpdateObra={handleUpdateObra}
-            onOpenMap={openMapFromHistory}
-          />,
-          document.body,
-        )}
+      {workModal?.obra && createPortal(
+        <ObraModal
+          key={`${workModal.mode}-${workModal.obra.id}`}
+          mode={workModal.mode}
+          tab={workModalTab}
+          obra={workModal.obra}
+          rdos={rdos} midias={midias} aprovacoes={aprovacoes}
+          onClose={closeWorkModal}
+          onSetTab={setWorkModalTab}
+          onCreateRdo={handleCreateRdo}
+          onCreateMedia={handleMediaUpload}
+          onCreateApproval={handleCreateApproval}
+          onUpdateObra={handleUpdateObra}
+          onOpenMap={openMapFromHistory}
+        />,
+        document.body,
+      )}
     </div>
   );
 }
