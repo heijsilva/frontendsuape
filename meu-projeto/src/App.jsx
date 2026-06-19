@@ -853,8 +853,9 @@ function AprovacoesScreen({ aprovacoes, loading, error }) {
 // ─────────────────────────────────────────────
 void function MidiasScreen() {}; // suprimido — substituído por MidiasUploadScreen
 
-function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
+function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload, onOpenMap }) {
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const [pendingFile, setPendingFile] = useState(null);
   const [obraId,      setObraId]      = useState('');
   const [rdoId,       setRdoId]       = useState('');
@@ -862,8 +863,16 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
   const [feedback,    setFeedback]    = useState('');
   const [dropActive,  setDropActive]  = useState(false);
 
-  const reset    = () => { setPendingFile(null); setObraId(''); setRdoId(''); setFeedback(''); if (fileInputRef.current) fileInputRef.current.value = ''; };
+  const reset    = () => {
+    setPendingFile(null);
+    setObraId('');
+    setRdoId('');
+    setFeedback('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
+  };
   const openPick = () => fileInputRef.current?.click();
+  const openCamera = () => cameraInputRef.current?.click();
   const onFile   = (file) => { if (!file) return; setPendingFile(file); setFeedback('Arquivo selecionado. Informe a obra e o RDO antes de enviar.'); };
   const onDrop   = (e)    => { e.preventDefault(); setDropActive(false); onFile(e.dataTransfer.files?.[0]); };
 
@@ -883,13 +892,23 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
   };
 
   const inputCls = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-[#0f1729] outline-none transition-all duration-150 focus:border-[#f5c518] focus:ring-2 focus:ring-[#f5c518]/20';
-  const labelCls = 'text-[10px] font-black uppercase tracking-[0.3em] text-slate-400';
 
   return (
     <PageShell
       title="Midias"
       subtitle="Banco visual"
-      action={<Btn variant="dark" onClick={openPick}><i className="fa-solid fa-cloud-arrow-up text-xs" />Enviar midia</Btn>}
+      action={
+        <div className="flex flex-wrap gap-2">
+          <Btn variant="outline" onClick={openCamera}>
+            <i className="fa-solid fa-camera text-xs" />
+            Usar camera
+          </Btn>
+          <Btn variant="dark" onClick={openPick}>
+            <i className="fa-solid fa-cloud-arrow-up text-xs" />
+            Enviar midia
+          </Btn>
+        </div>
+      }
     >
       <div className="grid gap-5 lg:grid-cols-[1fr_0.95fr]">
         {/* Gallery */}
@@ -919,7 +938,23 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
                   <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
                   <div className="relative flex h-full items-end justify-between p-3 text-white">
                     <Badge tone="slate" className="!border-white/20 !bg-black/35 !text-white backdrop-blur">{item.kind.toUpperCase()}</Badge>
-                    <i className={`fa-solid ${item.kind === 'video' ? 'fa-circle-play' : item.kind === 'document' ? 'fa-up-right-from-square' : 'fa-camera'} text-xl opacity-80`} />
+                    <div className="flex items-center gap-2">
+                      {item.kind === 'image' && item.latitude && item.longitude && (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/35 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.22em] text-white backdrop-blur transition-colors hover:bg-black/50"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onOpenMap?.(item);
+                          }}
+                        >
+                          <i className="fa-solid fa-map-location-dot text-[11px]" />
+                          Ver mapa
+                        </button>
+                      )}
+                      <i className={`fa-solid ${item.kind === 'video' ? 'fa-circle-play' : item.kind === 'document' ? 'fa-up-right-from-square' : 'fa-camera'} text-xl opacity-80`} />
+                    </div>
                   </div>
                 </div>
               </a>
@@ -951,6 +986,14 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
             </button>
 
             <input ref={fileInputRef} type="file" className="hidden" accept="image/*,video/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.dwg" onChange={(e) => onFile(e.target.files?.[0])} />
+            <input
+              ref={cameraInputRef}
+              type="file"
+              className="hidden"
+              accept="image/*,video/*"
+              capture="environment"
+              onChange={(e) => onFile(e.target.files?.[0])}
+            />
 
             {pendingFile && (
               <form onSubmit={handleSubmit} className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 animate-in fade-in duration-200">
@@ -978,8 +1021,27 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
                   <Btn variant="outline" onClick={reset} disabled={submitting} className="flex-1">Limpar</Btn>
                   <Btn type="submit" variant="dark" disabled={submitting} className="flex-1">{submitting ? 'Enviando...' : 'Enviar para API'}</Btn>
                 </div>
-              </form>
+                </form>
             )}
+
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={openCamera}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.22em] text-[#0f1729] transition-all duration-150 hover:border-[#f5c518] hover:bg-[#fffef7]"
+              >
+                <i className="fa-solid fa-camera" />
+                Abrir camera
+              </button>
+              <button
+                type="button"
+                onClick={openPick}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.22em] text-[#0f1729] transition-all duration-150 hover:border-[#f5c518] hover:bg-[#fffef7]"
+              >
+                <i className="fa-solid fa-folder-open" />
+                Escolher arquivo
+              </button>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-[#0f1729] p-5 shadow-sm">
@@ -1094,13 +1156,21 @@ function GraficosScreen({ obras, rdos, midias, loading, error }) {
 // ─────────────────────────────────────────────
 // TELA: MAPA
 // ─────────────────────────────────────────────
-function MapaScreen({ midias, aprovacoes, loading, error }) {
+function MapaScreen({ midias, aprovacoes, loading, error, selectedPoint }) {
   const { mediaPoints, approvalPoints, allPoints } = buildMapPoints(midias, aprovacoes);
-  const mapCenter = allPoints.length
-    ? [allPoints.reduce((s, p) => s + p.latitude, 0) / allPoints.length, allPoints.reduce((s, p) => s + p.longitude, 0) / allPoints.length]
+  const hasSelectedPoint = Boolean(selectedPoint?.latitude && selectedPoint?.longitude);
+  const mapCenter = hasSelectedPoint
+    ? [selectedPoint.latitude, selectedPoint.longitude]
+    : allPoints.length
+      ? [allPoints.reduce((s, p) => s + p.latitude, 0) / allPoints.length, allPoints.reduce((s, p) => s + p.longitude, 0) / allPoints.length]
     : [-8.31, -34.96];
+  const mapZoom = hasSelectedPoint ? 16 : (allPoints.length ? 10 : 8);
   const mapBounds   = allPoints.length ? allPoints.map((p) => [p.latitude, p.longitude]) : null;
-  const centerLabel = allPoints.length ? `${allPoints.length} pontos georreferenciados` : 'Sem coordenadas enviadas';
+  const centerLabel = hasSelectedPoint
+    ? 'Ponto selecionado da midia'
+    : allPoints.length
+      ? `${allPoints.length} pontos georreferenciados`
+      : 'Sem coordenadas enviadas';
 
   return (
     <PageShell
@@ -1125,7 +1195,7 @@ function MapaScreen({ midias, aprovacoes, loading, error }) {
           {loading && <LoadingRow label="Carregando pontos geograficos..." className="mb-4" />}
 
           <div className="relative h-[580px] overflow-hidden rounded-2xl border border-slate-200">
-            <MapContainer center={mapCenter} zoom={allPoints.length ? 10 : 8} scrollWheelZoom className="h-full w-full" whenReady={(map) => { if (mapBounds) map.target.fitBounds(mapBounds, { padding: [40, 40] }); }}>
+            <MapContainer center={mapCenter} zoom={mapZoom} scrollWheelZoom className="h-full w-full" whenReady={(map) => { if (mapBounds && !hasSelectedPoint) map.target.fitBounds(mapBounds, { padding: [40, 40] }); }}>
               <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
               {mediaPoints.map((p) => (
                 <CircleMarker key={p.id} center={[p.latitude, p.longitude]} pathOptions={{ color: '#f5c518', fillColor: '#f5c518', fillOpacity: 0.9, weight: 2 }} radius={10}>
@@ -1137,6 +1207,17 @@ function MapaScreen({ midias, aprovacoes, loading, error }) {
                   <Popup><div className="min-w-[140px]"><p className="font-black text-[#0f1729]">{p.label}</p><p className="text-xs text-slate-500">{p.sublabel}</p><Badge tone="sky" className="mt-2">Aprovacao</Badge></div></Popup>
                 </CircleMarker>
               ))}
+              {hasSelectedPoint && (
+                <CircleMarker center={[selectedPoint.latitude, selectedPoint.longitude]} pathOptions={{ color: '#16a34a', fillColor: '#16a34a', fillOpacity: 1, weight: 3 }} radius={12}>
+                  <Popup>
+                    <div className="min-w-[160px]">
+                      <p className="font-black text-[#0f1729]">{selectedPoint.label}</p>
+                      <p className="text-xs text-slate-500">{selectedPoint.sublabel}</p>
+                      <Badge tone="emerald" className="mt-2">Imagem selecionada</Badge>
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              )}
             </MapContainer>
 
             <div className="pointer-events-none absolute left-3 top-3 z-[401] rounded-full border border-white/20 bg-[#0f1729]/80 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-white/80 backdrop-blur">
@@ -1316,8 +1397,8 @@ function getScreen(activeItem, state, handlers) {
   switch (activeItem) {
     case 'RDO':        return <RdoScreen rdos={state.rdos} loading={state.loading} error={state.errors.rdos} />;
     case 'Aprovacoes': return <AprovacoesScreen aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.aprovacoes} />;
-    case 'Midias':     return <MidiasUploadScreen midias={state.midias} loading={state.loading} error={state.errors.midias} obras={state.obras} rdos={state.rdos} onUpload={handlers.onUpload} />;
-    case 'Mapa':       return <MapaScreen midias={state.midias} aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.midias || state.errors.aprovacoes} />;
+    case 'Midias':     return <MidiasUploadScreen midias={state.midias} loading={state.loading} error={state.errors.midias} obras={state.obras} rdos={state.rdos} onUpload={handlers.onUpload} onOpenMap={handlers.onOpenMap} />;
+    case 'Mapa':       return <MapaScreen midias={state.midias} aprovacoes={state.aprovacoes} loading={state.loading} error={state.errors.midias || state.errors.aprovacoes} selectedPoint={state.mapFocus} />;
     case 'Graficos':   return <GraficosScreen obras={state.obras} rdos={state.rdos} midias={state.midias} loading={state.loading} error={state.errors.rdos || state.errors.obras || state.errors.midias} />;
     case 'Log de erros': return <LogErrosScreen requestLogs={state.requestLogs} />;
     case 'Obras': default:
@@ -1340,6 +1421,7 @@ function getScreen(activeItem, state, handlers) {
 export default function App() {
   const [expandedObra,   setExpandedObra]   = useState(null);
   const [activeItem,     setActiveItem]     = useState('Obras');
+  const [mapFocus,       setMapFocus]       = useState(null);
   const [workModal,      setWorkModal]      = useState(null);
   const [workModalTab,   setWorkModalTab]   = useState('rdo');
   const [loading,        setLoading]        = useState(true);
@@ -1408,7 +1490,7 @@ export default function App() {
   const handleCreateRdo      = useCallback(async (payload) => { await axios.post(API_BASE_URL, payload, { params: { resource: 'rdos' } }); await refreshData(); }, [refreshData]);
   const handleCreateApproval = useCallback(async (payload) => { await axios.post(API_BASE_URL, payload, { params: { resource: 'aprovacoes' } }); await refreshData(); }, [refreshData]);
   const handleUpdateObra     = useCallback(async (id, payload) => { await axios.put(API_BASE_URL, payload, { params: { resource: 'obras', id } }); await refreshData(); }, [refreshData]);
-  const openMapFromHistory   = useCallback(() => { setActiveItem('Mapa'); closeWorkModal(); }, [closeWorkModal]);
+  const openMapFromHistory   = useCallback(() => { setMapFocus(null); setActiveItem('Mapa'); closeWorkModal(); }, [closeWorkModal]);
 
   // ── Normalização ──
   const obras = collections.obras.map(normalizeObra);
@@ -1436,6 +1518,23 @@ export default function App() {
     };
   });
 
+  const openMediaMap = useCallback((mediaItem) => {
+    if (!mediaItem?.latitude || !mediaItem?.longitude) {
+      setMapFocus(null);
+      setActiveItem('Mapa');
+      return;
+    }
+
+    setMapFocus({
+      latitude: mediaItem.latitude,
+      longitude: mediaItem.longitude,
+      label: mediaItem.title,
+      sublabel: mediaItem.meta,
+      kind: 'media',
+    });
+    setActiveItem('Mapa');
+  }, []);
+
   // ── Navegação da Suly ──
   const navigateFromAssistant = useCallback((action) => {
     if (!action) return;
@@ -1457,11 +1556,12 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         {getScreen(
           activeItem,
-          { obras, rdos, aprovacoes, midias, loading, errors, requestLogs },
+          { obras, rdos, aprovacoes, midias, loading, errors, requestLogs, mapFocus },
           {
             expandedObra,
             onToggleObra: toggleObra,
             onUpload:     handleMediaUpload,
+            onOpenMap:    openMediaMap,
             onOpenRdo:    (obra) => openWorkModal('rdo',     obra),
             onOpenEdit:   (obra) => openWorkModal('edit',    obra),
             onOpenHistory:(obra) => openWorkModal('history', obra),
