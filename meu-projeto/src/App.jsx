@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
+import { CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet';
 import {
   Bar,
   BarChart,
@@ -15,6 +16,7 @@ import {
   YAxis,
 } from 'recharts';
 import Sidebar from './components/Sidebar/Sidebar';
+import 'leaflet/dist/leaflet.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ki6.com.br/hackathon-suape-api-php/api.php';
 const UPLOAD_BASE_URL = import.meta.env.VITE_UPLOAD_URL || 'https://ki6.com.br/hackathon-suape-api-php/upload.php';
@@ -163,6 +165,9 @@ function normalizeApproval(item, index) {
 function normalizeMedia(item, index) {
   const id = pick(item.id, index + 1);
   const url = resolveProductionAssetUrl(pick(item.caminho, item.url, item.arquivo, item.path));
+  const previewUrl = resolveProductionAssetUrl(
+    pick(item.miniatura_caminho, item.miniaturaUrl, item.miniatura_url, item.miniatura_nome_arquivo, item.caminho, item.url, item.arquivo, item.path),
+  );
   return {
     id: toText(id, `MID-${index + 1}`),
     title: toText(pick(item.descricao, item.nome, item.titulo, `Midia ${pick(item.tipo, id)}`)),
@@ -174,6 +179,7 @@ function normalizeMedia(item, index) {
       .filter(Boolean)
       .join(' • ') || 'Sem metadados',
     url,
+    previewUrl,
     kind: getMediaKind(url, pick(item.tipo, item.type)),
   };
 }
@@ -288,41 +294,10 @@ function buildMapPoints(midias, aprovacoes) {
       };
     })
     .filter(Boolean);
-
-  const allPoints = [...mediaPoints, ...approvalPoints];
-  if (!allPoints.length) {
-    return { mediaPoints, approvalPoints, allPoints, bounds: null };
-  }
-
-  const bounds = allPoints.reduce(
-    (acc, point) => ({
-      minLat: Math.min(acc.minLat, point.latitude),
-      maxLat: Math.max(acc.maxLat, point.latitude),
-      minLng: Math.min(acc.minLng, point.longitude),
-      maxLng: Math.max(acc.maxLng, point.longitude),
-    }),
-    {
-      minLat: allPoints[0].latitude,
-      maxLat: allPoints[0].latitude,
-      minLng: allPoints[0].longitude,
-      maxLng: allPoints[0].longitude,
-    },
-  );
-
-  const latSpan = Math.max(bounds.maxLat - bounds.minLat, 0.001);
-  const lngSpan = Math.max(bounds.maxLng - bounds.minLng, 0.001);
-
-  const projectPoint = (point) => ({
-    ...point,
-    x: ((point.longitude - bounds.minLng) / lngSpan) * 100,
-    y: 100 - ((point.latitude - bounds.minLat) / latSpan) * 100,
-  });
-
   return {
-    mediaPoints: mediaPoints.map(projectPoint),
-    approvalPoints: approvalPoints.map(projectPoint),
-    allPoints: allPoints.map(projectPoint),
-    bounds,
+    mediaPoints,
+    approvalPoints,
+    allPoints: [...mediaPoints, ...approvalPoints],
   };
 }
 
@@ -1110,9 +1085,9 @@ function MidiasScreen({ midias, loading, error }) {
                 className="block"
               >
                 <div className="relative h-44 overflow-hidden bg-gradient-to-br from-slate-900 via-slate-700 to-[#f5c518] p-4">
-                  {item.kind === 'image' && item.url && (
+                  {item.kind === 'image' && (item.previewUrl || item.url) && (
                     <img
-                      src={item.url}
+                      src={item.previewUrl || item.url}
                       alt={item.title}
                       className="absolute inset-0 h-full w-full object-cover"
                       loading="lazy"
@@ -1292,9 +1267,9 @@ function MidiasUploadScreen({ midias, loading, error, obras, rdos, onUpload }) {
                 className="block"
               >
                 <div className="relative h-44 overflow-hidden bg-gradient-to-br from-slate-900 via-slate-700 to-[#f5c518] p-4">
-                  {item.kind === 'image' && item.url && (
+                  {item.kind === 'image' && (item.previewUrl || item.url) && (
                     <img
-                      src={item.url}
+                      src={item.previewUrl || item.url}
                       alt={item.title}
                       className="absolute inset-0 h-full w-full object-cover"
                       loading="lazy"
@@ -1608,9 +1583,17 @@ function GraficosScreen({ obras, rdos, midias, loading, error }) {
 
 function MapaScreen({ midias, aprovacoes, loading, error }) {
   const { mediaPoints, approvalPoints, allPoints } = buildMapPoints(midias, aprovacoes);
-  const centerLabel = allPoints.length
-    ? `${allPoints.length} pontos georreferenciados`
-    : 'Sem coordenadas enviadas';
+  const mapCenter = allPoints.length
+    ? [
+        allPoints.reduce((sum, point) => sum + point.latitude, 0) / allPoints.length,
+        allPoints.reduce((sum, point) => sum + point.longitude, 0) / allPoints.length,
+      ]
+    : [-8.31, -34.96];
+
+  const mapBounds = allPoints.length ? allPoints.map((point) => [point.latitude, point.longitude]) : null;
+
+  const mapZoom = allPoints.length ? 10 : 8;
+  const centerLabel = allPoints.length ? `${allPoints.length} pontos georreferenciados` : 'Sem coordenadas enviadas';
 
   return (
     <PageShell
@@ -1647,20 +1630,65 @@ function MapaScreen({ midias, aprovacoes, loading, error }) {
             </div>
           )}
 
-          <div className="relative h-[620px] overflow-hidden rounded-[28px] border border-slate-200 bg-[radial-gradient(circle_at_top_right,_rgba(245,197,24,0.18),_transparent_32%),linear-gradient(180deg,_#10233f_0%,_#1c355f_48%,_#d8ecff_48.5%,_#eff6fb_100%)]">
-            <div className="absolute inset-0 opacity-30" style={{
-              backgroundImage:
-                'linear-gradient(rgba(255,255,255,0.14) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px)',
-              backgroundSize: '48px 48px',
-            }} />
+          <div className="relative h-[620px] overflow-hidden rounded-[28px] border border-slate-200">
+            <MapContainer
+              center={mapCenter}
+              zoom={mapZoom}
+              scrollWheelZoom
+              className="h-full w-full"
+              whenReady={(map) => {
+                if (mapBounds) {
+                  map.target.fitBounds(mapBounds, { padding: [40, 40] });
+                }
+              }}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
 
-            <div className="absolute left-4 top-4 z-10 rounded-full border border-white/20 bg-[#0f1729]/80 px-3 py-1 text-[10px] font-black uppercase tracking-[0.35em] text-white/80 backdrop-blur">
+              {mediaPoints.map((point) => (
+                <CircleMarker
+                  key={point.id}
+                  center={[point.latitude, point.longitude]}
+                  pathOptions={{ color: '#f5c518', fillColor: '#f5c518', fillOpacity: 0.9, weight: 2 }}
+                  radius={10}
+                >
+                  <Popup>
+                    <div className="min-w-[160px]">
+                      <p className="text-sm font-black text-[#0f1729]">{point.label}</p>
+                      <p className="text-xs text-slate-500">{point.sublabel}</p>
+                      <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.24em] text-[#9a7a00]">Midia</p>
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              ))}
+
+              {approvalPoints.map((point) => (
+                <CircleMarker
+                  key={point.id}
+                  center={[point.latitude, point.longitude]}
+                  pathOptions={{ color: '#0ea5e9', fillColor: '#0ea5e9', fillOpacity: 0.9, weight: 2 }}
+                  radius={10}
+                >
+                  <Popup>
+                    <div className="min-w-[160px]">
+                      <p className="text-sm font-black text-[#0f1729]">{point.label}</p>
+                      <p className="text-xs text-slate-500">{point.sublabel}</p>
+                      <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.24em] text-sky-700">Aprovacao</p>
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              ))}
+            </MapContainer>
+
+            <div className="pointer-events-none absolute left-4 top-4 z-[401] rounded-full border border-white/20 bg-[#0f1729]/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.35em] text-white/80 backdrop-blur">
               {centerLabel}
             </div>
 
             {!allPoints.length && (
-              <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
-                <div className="max-w-md rounded-3xl border border-white/20 bg-white/85 p-6 text-[#0f1729] shadow-xl backdrop-blur">
+              <div className="absolute inset-0 z-[400] flex items-center justify-center bg-slate-950/35 p-6 text-center">
+                <div className="max-w-md rounded-3xl border border-white/20 bg-white/90 p-6 text-[#0f1729] shadow-xl backdrop-blur">
                   <p className="text-sm font-black uppercase tracking-[0.3em] text-slate-400">Mapa vazio</p>
                   <p className="mt-3 text-lg font-bold">
                     Nenhuma midia ou aprovacao trouxe latitude e longitude para desenhar no mapa.
@@ -1668,47 +1696,6 @@ function MapaScreen({ midias, aprovacoes, loading, error }) {
                 </div>
               </div>
             )}
-
-            {mediaPoints.map((point) => (
-              <div
-                key={point.id}
-                className="absolute z-20"
-                style={{ left: `${point.x}%`, top: `${point.y}%`, transform: 'translate(-50%, -50%)' }}
-              >
-                <div className="group relative flex flex-col items-center">
-                  <div className="flex h-4 w-4 items-center justify-center rounded-full bg-[#f5c518] ring-4 ring-[#f5c518]/25 shadow-lg shadow-[#f5c518]/30" />
-                  <div className="mt-2 hidden max-w-[180px] rounded-2xl border border-[#f5c518]/20 bg-white px-3 py-2 text-left text-xs shadow-xl group-hover:block">
-                    <p className="font-black text-[#0f1729]">{point.label}</p>
-                    <p className="mt-1 text-slate-500">{point.sublabel}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {approvalPoints.map((point) => (
-              <div
-                key={point.id}
-                className="absolute z-20"
-                style={{ left: `${point.x}%`, top: `${point.y}%`, transform: 'translate(-50%, -50%)' }}
-              >
-                <div className="group relative flex flex-col items-center">
-                  <div className="flex h-4 w-4 items-center justify-center rounded-full bg-sky-500 ring-4 ring-sky-300/30 shadow-lg shadow-sky-500/30" />
-                  <div className="mt-2 hidden max-w-[180px] rounded-2xl border border-sky-200 bg-white px-3 py-2 text-left text-xs shadow-xl group-hover:block">
-                    <p className="font-black text-[#0f1729]">{point.label}</p>
-                    <p className="mt-1 text-slate-500">{point.sublabel}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            <div className="absolute bottom-4 left-4 flex flex-wrap gap-2">
-              <span className="rounded-full border border-[#f5c518]/20 bg-white/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.3em] text-[#9a7a00] backdrop-blur">
-                Midias em amarelo
-              </span>
-              <span className="rounded-full border border-sky-200 bg-white/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.3em] text-sky-700 backdrop-blur">
-                Aprovacoes em azul
-              </span>
-            </div>
           </div>
         </div>
 
@@ -1893,6 +1880,9 @@ function getScreen(activeItem, state, handlers) {
           error={state.errors.obras}
           expandedObra={handlers.expandedObra}
           onToggleObra={handlers.onToggleObra}
+          onOpenRdo={handlers.onOpenRdo}
+          onOpenEdit={handlers.onOpenEdit}
+          onOpenHistory={handlers.onOpenHistory}
         />
       );
   }
